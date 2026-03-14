@@ -1,4 +1,39 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+
+public class DidScanEntry
+{
+    [JsonPropertyName("header")]
+    public string Header { get; set; } = "";
+
+    [JsonPropertyName("did")]
+    public string Did { get; set; } = "";
+
+    [JsonPropertyName("command")]
+    public string Command { get; set; } = "";
+
+    [JsonPropertyName("dataBytes")]
+    public string DataBytes { get; set; } = "";
+
+    [JsonPropertyName("byteCount")]
+    public int ByteCount { get; set; }
+
+    [JsonPropertyName("rawResponse")]
+    public string RawResponse { get; set; } = "";
+
+    [JsonPropertyName("scannedAt")]
+    public DateTime ScannedAt { get; set; }
+}
+
+public class DidScanResult
+{
+    [JsonPropertyName("entries")]
+    public List<DidScanEntry> Entries { get; set; } = [];
+
+    [JsonPropertyName("lastUpdated")]
+    public DateTime LastUpdated { get; set; }
+}
 
 public class DidScanner
 {
@@ -24,7 +59,9 @@ public class DidScanner
             return;
         }
 
-        var results = new List<string>();
+        // Load existing results to merge with
+        var scanResult = await LoadExistingAsync(outputFile);
+        var now = DateTime.UtcNow;
         int foundCount = 0;
         int scanned = 0;
 
@@ -39,16 +76,12 @@ public class DidScanner
             // Filter out non-data responses:
             // - Empty or standard ELM327 errors
             // - UDS negative response: 7F XX YY (service rejected)
-            //   Common NRC codes: 11=serviceNotSupported, 12=subFunctionNotSupported,
-            //   13=incorrectMessageLength, 14=responseTooLong, 22=conditionsNotCorrect,
-            //   31=requestOutOfRange, 33=securityAccessDenied, 72=generalProgrammingFailure
             if (string.IsNullOrEmpty(response) ||
                 response.Contains("NO DATA") ||
                 response.Contains("ERROR") ||
                 response.Contains("UNABLE TO CONNECT") ||
                 response.TrimStart().StartsWith("7F"))
             {
-                // Progress every 256 DIDs
                 if (did % 256 == 0)
                     Console.Write($"\r  Scanned {scanned}/{endDid - startDid + 1}, found {foundCount}...");
                 await Task.Delay(20, ct);
@@ -56,23 +89,72 @@ public class DidScanner
             }
 
             foundCount++;
-            var hexBytes = ExtractHexBytes(response);
-            var line = $"{header},{cmd},{hexBytes},{response.Replace('\n', ' ')}";
-            results.Add(line);
-            Console.WriteLine($"  FOUND: {cmd} -> {hexBytes}  (raw: {response.Replace('\n', ' ')})");
+            var hexBytes = ExtractDataBytes(response);
+            var dataByteCount = hexBytes.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+
+            var entry = new DidScanEntry
+            {
+                Header = header,
+                Did = $"{did:X4}",
+                Command = cmd,
+                DataBytes = hexBytes,
+                ByteCount = dataByteCount,
+                RawResponse = response.Replace('\n', ' '),
+                ScannedAt = now
+            };
+
+            // Update or add entry (keyed by header + DID)
+            var existingIdx = scanResult.Entries.FindIndex(
+                e => e.Header == header && e.Did == entry.Did);
+            if (existingIdx >= 0)
+                scanResult.Entries[existingIdx] = entry;
+            else
+                scanResult.Entries.Add(entry);
+
+            Console.WriteLine($"  FOUND: {cmd} -> {hexBytes} ({dataByteCount} bytes)");
 
             await Task.Delay(30, ct);
         }
 
         Console.WriteLine();
         Console.WriteLine($"Scan complete: {foundCount} DIDs responded out of {scanned} scanned.");
+        Console.WriteLine($"Total known DIDs across all scans: {scanResult.Entries.Count}");
 
-        if (results.Count > 0 && !string.IsNullOrEmpty(outputFile))
+        if (!string.IsNullOrEmpty(outputFile))
         {
-            var header_line = "Header,Command,DataBytes,RawResponse";
-            await File.WriteAllLinesAsync(outputFile, results.Prepend(header_line), ct);
+            scanResult.LastUpdated = now;
+            // Sort entries by header then DID for readability
+            scanResult.Entries.Sort((a, b) =>
+            {
+                var hcmp = string.Compare(a.Header, b.Header, StringComparison.Ordinal);
+                return hcmp != 0 ? hcmp : string.Compare(a.Did, b.Did, StringComparison.Ordinal);
+            });
+            await SaveAsync(outputFile, scanResult);
             Console.WriteLine($"Results saved to {outputFile}");
         }
+    }
+
+    private static async Task<DidScanResult> LoadExistingAsync(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            return new DidScanResult();
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(path);
+            return JsonSerializer.Deserialize<DidScanResult>(json) ?? new DidScanResult();
+        }
+        catch
+        {
+            return new DidScanResult();
+        }
+    }
+
+    private static async Task SaveAsync(string path, DidScanResult result)
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        var json = JsonSerializer.Serialize(result, options);
+        await File.WriteAllTextAsync(path, json);
     }
 
     public static readonly (string Header, string Name)[] KnownEcus =
@@ -98,15 +180,35 @@ public class DidScanner
         (0xF190, 0xF19F, "UDS VIN/Serial Area"),
     ];
 
-    private static string ExtractHexBytes(string response)
+    private static string ExtractDataBytes(string response)
     {
-        var parts = new List<string>();
+        var allBytes = new List<string>();
         foreach (var line in response.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var trimmed = line.Trim();
             if (trimmed.Contains("SEARCHING")) continue;
-            parts.Add(trimmed);
+
+            var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                if (part.Length == 2 && IsHex(part))
+                    allBytes.Add(part);
+            }
         }
-        return string.Join(" ", parts);
+
+        // Strip the UDS response prefix: 62 XX XX (3 bytes)
+        if (allBytes.Count >= 3 && allBytes[0] == "62")
+            return string.Join(" ", allBytes.Skip(3));
+
+        return string.Join(" ", allBytes);
+    }
+
+    private static bool IsHex(string s)
+    {
+        foreach (var c in s)
+        {
+            if (!char.IsAsciiHexDigit(c)) return false;
+        }
+        return true;
     }
 }

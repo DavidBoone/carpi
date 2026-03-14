@@ -64,7 +64,7 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("  --scan-dids <header> <start> <end>  Scan DID range on an ECU");
     Console.WriteLine("                      e.g., --scan-dids 7E4 0000 FFFF");
     Console.WriteLine("  --scan-dids-all     Scan common DID ranges on all known ECUs");
-    Console.WriteLine("  --scan-output <f>   Output file for DID scan results (default: scan_results.csv)");
+    Console.WriteLine("  --scan-output <f>   Output file for DID scan results (default: scan_results.json)");
     return 0;
 }
 
@@ -275,7 +275,7 @@ try
     // DID scanning mode
     if (args.Contains("--scan-dids-all") || args.Contains("--scan-dids"))
     {
-        var scanOutput = GetArgumentValue(args, "--scan-output") ?? "scan_results.csv";
+        var scanOutput = GetArgumentValue(args, "--scan-output") ?? "scan_results.json";
         var scanner = new DidScanner(obd, logger);
 
         if (args.Contains("--scan-dids-all"))
@@ -292,8 +292,7 @@ try
                 foreach (var (start, end, desc) in DidScanner.CommonRanges)
                 {
                     Console.WriteLine($"  Range: {desc} ({start:X4}-{end:X4})");
-                    var rangeFile = $"scan_{ecuHeader}_{start:X4}_{end:X4}.csv";
-                    await scanner.ScanAsync(ecuHeader, start, end, rangeFile, CancellationToken.None);
+                    await scanner.ScanAsync(ecuHeader, start, end, scanOutput, CancellationToken.None);
                 }
                 Console.WriteLine();
             }
