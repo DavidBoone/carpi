@@ -59,6 +59,14 @@ public class DidScanner
             return;
         }
 
+        // Verify ECU is reachable before scanning
+        if (!await ProbeEcuAsync(header, ct))
+        {
+            Console.Error.WriteLine($"ECU {header} is not reachable (TesterPresent got no response). Is the vehicle on?");
+            return;
+        }
+        Console.WriteLine($"ECU {header} is online.");
+
         // Speed up scanning: reduce ELM327's own response timeout
         // ATST sets timeout in units of 4ms. 0A = 40ms (vs default ~200ms)
         await _obd.SendCommandAsync("ATST 0A", ct);
@@ -121,6 +129,10 @@ public class DidScanner
         // Restore default ELM327 timeout
         await _obd.SendCommandAsync("ATST FF", ct);
 
+        // Verify ECU is still reachable after scanning
+        if (!await ProbeEcuAsync(header, ct))
+            Console.Error.WriteLine($"WARNING: ECU {header} is no longer reachable — vehicle may have turned off during scan. Results may be incomplete.");
+
         Console.WriteLine();
         Console.WriteLine($"Scan complete: {foundCount} DIDs responded out of {scanned} scanned.");
         Console.WriteLine($"Total known DIDs across all scans: {scanResult.Entries.Count}");
@@ -137,6 +149,20 @@ public class DidScanner
             await SaveAsync(outputFile, scanResult);
             Console.WriteLine($"Results saved to {outputFile}");
         }
+    }
+
+    /// <summary>
+    /// Sends UDS TesterPresent (3E00) to check if the ECU is alive.
+    /// Any response (positive 7E or negative 7F) means online. NO DATA means offline.
+    /// </summary>
+    private async Task<bool> ProbeEcuAsync(string header, CancellationToken ct)
+    {
+        await _obd.SendCommandAsync($"ATSH {header}", ct);
+        var response = await _obd.SendCommandAsync("3E00", ct);
+        return !string.IsNullOrEmpty(response)
+            && !response.Contains("NO DATA")
+            && !response.Contains("UNABLE TO CONNECT")
+            && !response.Contains("ERROR");
     }
 
     private static async Task<DidScanResult> LoadExistingAsync(string path)
