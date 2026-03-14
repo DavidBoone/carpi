@@ -61,6 +61,10 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("  --pid-filter <f>    PID priority filter (default: *!)");
     Console.WriteLine("                      * = common, ! = important, + = cell voltages");
     Console.WriteLine("                      - = advanced, ? = unknown, all = everything");
+    Console.WriteLine("  --scan-dids <header> <start> <end>  Scan DID range on an ECU");
+    Console.WriteLine("                      e.g., --scan-dids 7E4 0000 FFFF");
+    Console.WriteLine("  --scan-dids-all     Scan common DID ranges on all known ECUs");
+    Console.WriteLine("  --scan-output <f>   Output file for DID scan results (default: scan_results.csv)");
     return 0;
 }
 
@@ -268,6 +272,67 @@ try
     Console.WriteLine("Connected successfully!");
     Console.WriteLine();
 
+    // DID scanning mode
+    if (args.Contains("--scan-dids-all") || args.Contains("--scan-dids"))
+    {
+        var scanOutput = GetArgumentValue(args, "--scan-output") ?? "scan_results.csv";
+        var scanner = new DidScanner(obd, logger);
+
+        if (args.Contains("--scan-dids-all"))
+        {
+            Console.WriteLine("Scanning common DID ranges on all known ECUs...");
+            Console.WriteLine("(This will take a while)");
+            Console.WriteLine();
+
+            var allResults = new List<string> { "Header,Command,DataBytes,RawResponse" };
+
+            foreach (var (ecuHeader, ecuName) in DidScanner.KnownEcus)
+            {
+                Console.WriteLine($"=== {ecuName} ({ecuHeader}) ===");
+                foreach (var (start, end, desc) in DidScanner.CommonRanges)
+                {
+                    Console.WriteLine($"  Range: {desc} ({start:X4}-{end:X4})");
+                    var rangeFile = $"scan_{ecuHeader}_{start:X4}_{end:X4}.csv";
+                    await scanner.ScanAsync(ecuHeader, start, end, rangeFile, CancellationToken.None);
+                }
+                Console.WriteLine();
+            }
+        }
+        else
+        {
+            var scanHeader = GetArgumentValue(args, "--scan-dids");
+            if (string.IsNullOrEmpty(scanHeader))
+            {
+                Console.Error.WriteLine("Usage: --scan-dids <header> <start> <end>");
+                Console.Error.WriteLine("Known ECUs:");
+                foreach (var (h, n) in DidScanner.KnownEcus)
+                    Console.Error.WriteLine($"  {h}  {n}");
+                return 1;
+            }
+
+            // Parse start/end from remaining args after the header
+            var headerIdx = Array.IndexOf(args, "--scan-dids");
+            if (headerIdx + 3 >= args.Length)
+            {
+                Console.Error.WriteLine("Usage: --scan-dids <header> <start-hex> <end-hex>");
+                return 1;
+            }
+
+            var startHex = args[headerIdx + 2];
+            var endHex = args[headerIdx + 3];
+            var startDid = Convert.ToInt32(startHex, 16);
+            var endDid = Convert.ToInt32(endHex, 16);
+
+            await scanner.ScanAsync(scanHeader, startDid, endDid, scanOutput, CancellationToken.None);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("Disconnecting...");
+        await obd.DisconnectAsync();
+        Console.WriteLine("Done.");
+        return 0;
+    }
+
     // Look for PID CSV file
     var csvPath = !string.IsNullOrEmpty(appConfig.PidCsv)
         ? appConfig.PidCsv
@@ -348,6 +413,16 @@ catch (Exception ex)
 }
 
 return 0;
+
+string? GetArgumentValue(string[] a, string key)
+{
+    for (int i = 0; i < a.Length - 1; i++)
+    {
+        if (a[i] == key)
+            return a[i + 1];
+    }
+    return null;
+}
 
 bool IsLikelyObd(string name)
 {
