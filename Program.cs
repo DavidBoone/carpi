@@ -65,6 +65,8 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("                      e.g., --scan-dids 7E4 0000 FFFF");
     Console.WriteLine("  --scan-dids-all     Scan common DID ranges on all known ECUs");
     Console.WriteLine("  --scan-output <f>   Output file for DID scan results (default: scan_results.json)");
+    Console.WriteLine("  --report [json]     Generate HTML report from scan results (default: scan_results.json)");
+    Console.WriteLine("                      Outputs scan_report.html (no vehicle connection needed)");
     return 0;
 }
 
@@ -133,6 +135,24 @@ if (args.Contains("--scan-ble"))
 
     Console.WriteLine();
     Console.WriteLine("Use --ble <MAC> to connect to a device.");
+    return 0;
+}
+
+if (args.Contains("--report"))
+{
+    var jsonFile = GetArgumentValue(args, "--report") ?? "scan_results.json";
+    var csvPath = GetArgumentValue(args, "--csv") ?? "Chevrolet_Bolt_PIDs.csv";
+    if (!File.Exists(csvPath))
+        csvPath = Path.Combine(AppContext.BaseDirectory, "Chevrolet_Bolt_PIDs.csv");
+
+    var report = new DidReportGenerator();
+    if (File.Exists(csvPath))
+    {
+        report.LoadKnownPids(csvPath);
+        Console.WriteLine($"Loaded known PIDs from {csvPath}");
+    }
+
+    await report.GenerateAsync(jsonFile, "scan_report.html");
     return 0;
 }
 
