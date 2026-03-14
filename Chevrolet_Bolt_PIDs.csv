@@ -8,6 +8,8 @@ Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header
 !Inst W/mph,W/mph,,[222885]*[222414]/([22000D]/1.61),-10000,10000,W/mph,
 *Speed kmh,Speed,22000D,A,0,160,kmh,7E0
 *Speed mph,Speed,22000D,(A/1.61),0,100,mph,7E0
+*Odometer km,Odo km,2200A6,((A*16777216)+(B*65536)+(C*256)+D)/10,0,999999,km,7E0
+*Odometer mi,Odo mi,2200A6,((A*16777216)+(B*65536)+(C*256)+D)/16.09344,0,999999,mi,7E0
 ,,,,,,,
 !Battery - Pack - Capacity Ah Raw 2017-2018,Bat Cap Raw,2241A3,((A*256)+B)/10,100,250,Ah,7E4
 !Battery - Pack - Capacity Ah Raw 2019+,Bat Cap Raw,2245F9,((A*256)+B)/100,100,250,Ah,7E4
