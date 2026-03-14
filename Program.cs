@@ -14,7 +14,9 @@ var configBuilder = new ConfigurationBuilder()
         { "--port", "SerialPort" },
         { "--baud", "BaudRate" },
         { "--bluetooth-mac", "BluetoothMac" },
-        { "--ble", "BleMac" }
+        { "--ble", "BleMac" },
+        { "--csv", "PidCsv" },
+        { "--pid-filter", "PidFilter" }
     });
 
 var configuration = configBuilder.Build();
@@ -55,6 +57,10 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("  --scan-bluetooth    Scan for paired Bluetooth OBD2 devices");
     Console.WriteLine("  --scan-ble          Scan for BLE OBD2 devices (Linux only)");
     Console.WriteLine("  --bluetooth-mac <x> Bluetooth MAC for RFCOMM auto-binding on Linux");
+    Console.WriteLine("  --csv <path>        PID definitions CSV (default: Chevrolet_Bolt_PIDs.csv)");
+    Console.WriteLine("  --pid-filter <f>    PID priority filter (default: *!)");
+    Console.WriteLine("                      * = common, ! = important, + = cell voltages");
+    Console.WriteLine("                      - = advanced, ? = unknown, all = everything");
     return 0;
 }
 
@@ -260,16 +266,68 @@ try
 
     await obd.ConnectAsync(TimeSpan.FromMilliseconds(appConfig.ConnectionTimeout));
     Console.WriteLine("Connected successfully!");
-
-    Console.WriteLine();
-    Console.WriteLine("Querying OBD2 PIDs...");
     Console.WriteLine();
 
-    var results = await obd.DumpAllPidsAsync();
+    // Look for PID CSV file
+    var csvPath = !string.IsNullOrEmpty(appConfig.PidCsv)
+        ? appConfig.PidCsv
+        : Path.Combine(AppContext.BaseDirectory, "Chevrolet_Bolt_PIDs.csv");
 
-    foreach (var (pid, value) in results)
+    // Also check working directory
+    if (!File.Exists(csvPath))
+        csvPath = "Chevrolet_Bolt_PIDs.csv";
+
+    if (File.Exists(csvPath))
     {
-        Console.WriteLine($"{pid}: {value}");
+        Console.WriteLine($"Loading PIDs from {csvPath}...");
+        var allPids = BoltPidLoader.LoadFromCsv(csvPath);
+
+        // Filter by priority
+        var filter = appConfig.PidFilter;
+        if (string.IsNullOrEmpty(filter)) filter = "*!";
+
+        List<BoltPid> pidsToQuery;
+        if (filter == "all")
+        {
+            pidsToQuery = allPids.Where(p => !p.IsComputed).ToList();
+        }
+        else
+        {
+            pidsToQuery = allPids
+                .Where(p => !p.IsComputed && filter.Contains(p.Priority))
+                .ToList();
+        }
+
+        Console.WriteLine($"Querying {pidsToQuery.Count} PIDs (filter: {filter})...");
+        Console.WriteLine();
+
+        var query = new BoltPidQuery(obd, logger);
+        var results = await query.QueryPidsAsync(pidsToQuery, CancellationToken.None);
+
+        // Display grouped by header
+        foreach (var headerGroup in results.GroupBy(r => r.Pid.Header))
+        {
+            Console.WriteLine($"--- ECU {headerGroup.Key} ---");
+            foreach (var r in headerGroup)
+            {
+                if (r.Value.HasValue)
+                    Console.WriteLine($"  {r.Pid.ShortName,-20} {r.FormattedValue}");
+                else
+                    Console.WriteLine($"  {r.Pid.ShortName,-20} NO DATA");
+            }
+            Console.WriteLine();
+        }
+    }
+    else
+    {
+        Console.WriteLine("Querying standard OBD2 PIDs...");
+        Console.WriteLine();
+
+        var results = await obd.DumpAllPidsAsync();
+        foreach (var (pid, value) in results)
+        {
+            Console.WriteLine($"{pid}: {value}");
+        }
     }
 
     Console.WriteLine();
@@ -353,6 +411,8 @@ public class AppConfig
     public int ReadTimeout { get; set; } = 5000;
     public int WriteTimeout { get; set; } = 5000;
     public int ConnectionTimeout { get; set; } = 10000;
+    public string PidCsv { get; set; } = string.Empty;
+    public string PidFilter { get; set; } = string.Empty;
 }
 
 public class ObdDevice : IAsyncDisposable
@@ -418,7 +478,7 @@ public class ObdDevice : IAsyncDisposable
         }
     }
 
-    private async Task<string> SendCommandAsync(string command, CancellationToken ct)
+    public async Task<string> SendCommandAsync(string command, CancellationToken ct)
     {
         _transport.DiscardBuffers();
         await _transport.WriteAsync(command, ct);
