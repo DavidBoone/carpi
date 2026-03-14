@@ -36,10 +36,17 @@ public class DidScanner
             var cmd = $"22{did:X4}";
             var response = await _obd.SendCommandAsync(cmd, ct);
 
+            // Filter out non-data responses:
+            // - Empty or standard ELM327 errors
+            // - UDS negative response: 7F XX YY (service rejected)
+            //   Common NRC codes: 11=serviceNotSupported, 12=subFunctionNotSupported,
+            //   13=incorrectMessageLength, 14=responseTooLong, 22=conditionsNotCorrect,
+            //   31=requestOutOfRange, 33=securityAccessDenied, 72=generalProgrammingFailure
             if (string.IsNullOrEmpty(response) ||
                 response.Contains("NO DATA") ||
                 response.Contains("ERROR") ||
-                response.Contains("UNABLE TO CONNECT"))
+                response.Contains("UNABLE TO CONNECT") ||
+                response.TrimStart().StartsWith("7F"))
             {
                 // Progress every 256 DIDs
                 if (did % 256 == 0)
