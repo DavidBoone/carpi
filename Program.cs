@@ -9,7 +9,8 @@ var configBuilder = new ConfigurationBuilder()
     .AddCommandLine(args, new Dictionary<string, string>
     {
         { "--port", "SerialPort" },
-        { "--baud", "BaudRate" }
+        { "--baud", "BaudRate" },
+        { "--bluetooth-mac", "BluetoothMac" }
     });
 
 var configuration = configBuilder.Build();
@@ -31,6 +32,16 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 
 var logger = loggerFactory.CreateLogger<Program>();
 
+string? GetArgumentValue(string[] args, string key)
+{
+    for (int i = 0; i < args.Length - 1; i++)
+    {
+        if (args[i] == key)
+            return args[i + 1];
+    }
+    return null;
+}
+
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
     Console.WriteLine("CarPi OBD2 CLI Tool");
@@ -41,10 +52,12 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("  CarPi --port <port>             Connect to OBD2 device and dump values");
     Console.WriteLine();
     Console.WriteLine("Options:");
-    Console.WriteLine("  --port <port>     Serial port (e.g., /dev/ttyUSB0, COM3, /dev/rfcomm0)");
-    Console.WriteLine("  --baud <rate>     Baud rate (default: 115200)");
-    Console.WriteLine("  --list-ports      List available serial ports");
-    Console.WriteLine("  --scan-bluetooth  Scan for paired Bluetooth OBD2 devices");
+    Console.WriteLine("  --port <port>       Serial port (e.g., /dev/ttyUSB0, COM3, /dev/rfcomm0)");
+    Console.WriteLine("  --baud <rate>       Baud rate (default: 115200)");
+    Console.WriteLine("  --list-ports        List available serial ports");
+    Console.WriteLine("  --scan-bluetooth    Scan for paired Bluetooth OBD2 devices");
+    Console.WriteLine("  --bluetooth-mac <x>  Bluetooth MAC address for auto-binding on Linux");
+    Console.WriteLine("                       Use with --port /dev/rfcomm0");
     return 0;
 }
 
@@ -124,8 +137,7 @@ if (args.Contains("--scan-bluetooth"))
                 Console.WriteLine();
                 Console.WriteLine("To connect a Bluetooth OBD2 adapter:");
                 Console.WriteLine("1. Pair: bluetoothctl -> pair <MAC>");
-                Console.WriteLine("2. Bind: sudo rfcomm bind /dev/rfcomm0 <MAC>");
-                Console.WriteLine("3. Then run with --port /dev/rfcomm0");
+                Console.WriteLine("2. The CLI will auto-bind when connecting with --bluetooth-mac");
             }
         }
         
@@ -156,6 +168,12 @@ if (args.Contains("--scan-bluetooth"))
     return 0;
 }
 
+string? bluetoothMac = GetArgumentValue(args, "--bluetooth-mac");
+if (string.IsNullOrEmpty(bluetoothMac))
+{
+    bluetoothMac = appConfig.BluetoothMac;
+}
+
 string? port = appConfig.SerialPort;
 if (string.IsNullOrEmpty(port))
 {
@@ -165,8 +183,23 @@ if (string.IsNullOrEmpty(port))
 
 Console.WriteLine($"Connecting to OBD2 device on {port}...");
 
+bool boundRfcomm = false;
+
 try
 {
+    if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(bluetoothMac) && port?.StartsWith("/dev/rfcomm") == true)
+    {
+        Console.WriteLine($"Binding Bluetooth RFCOMM to {bluetoothMac}...");
+        var bindResult = await RunRfcommBindAsync(bluetoothMac, port);
+        if (!bindResult)
+        {
+            Console.Error.WriteLine("Failed to bind RFCOMM device. Is the car in range?");
+            return 1;
+        }
+        boundRfcomm = true;
+        await Task.Delay(500);
+    }
+    
     using var obd = new ObdDevice(port, appConfig.BaudRate, appConfig.ReadTimeout, appConfig.WriteTimeout, logger);
     
     await obd.ConnectAsync(TimeSpan.FromMilliseconds(appConfig.ConnectionTimeout));
@@ -187,6 +220,12 @@ try
     Console.WriteLine("Disconnecting...");
     await obd.DisconnectAsync();
     Console.WriteLine("Done.");
+    
+    if (boundRfcomm && OperatingSystem.IsLinux() && !string.IsNullOrEmpty(port))
+    {
+        Console.WriteLine("Releasing RFCOMM binding...");
+        await RunRfcommReleaseAsync(port);
+    }
 }
 catch (Exception ex)
 {
@@ -196,9 +235,56 @@ catch (Exception ex)
 
 return 0;
 
+async Task<bool> RunRfcommBindAsync(string mac, string device)
+{
+    try
+    {
+        var process = new System.Diagnostics.Process
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "rfcomm",
+                Arguments = $"bind {device} {mac}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            }
+        };
+        process.Start();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+async Task RunRfcommReleaseAsync(string device)
+{
+    try
+    {
+        var process = new System.Diagnostics.Process
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "rfcomm",
+                Arguments = $"release {device}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            }
+        };
+        process.Start();
+        await process.WaitForExitAsync();
+    }
+    catch { }
+}
+
 public class AppConfig
 {
     public string SerialPort { get; set; } = string.Empty;
+    public string BluetoothMac { get; set; } = string.Empty;
     public int BaudRate { get; set; } = 115200;
     public int ReadTimeout { get; set; } = 5000;
     public int WriteTimeout { get; set; } = 5000;
