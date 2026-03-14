@@ -1,4 +1,7 @@
 using System.IO.Ports;
+using System.Text;
+using Linux.Bluetooth;
+using Linux.Bluetooth.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -10,7 +13,8 @@ var configBuilder = new ConfigurationBuilder()
     {
         { "--port", "SerialPort" },
         { "--baud", "BaudRate" },
-        { "--bluetooth-mac", "BluetoothMac" }
+        { "--bluetooth-mac", "BluetoothMac" },
+        { "--ble", "BleMac" }
     });
 
 var configuration = configBuilder.Build();
@@ -32,16 +36,6 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 
 var logger = loggerFactory.CreateLogger<Program>();
 
-string? GetArgumentValue(string[] args, string key)
-{
-    for (int i = 0; i < args.Length - 1; i++)
-    {
-        if (args[i] == key)
-            return args[i + 1];
-    }
-    return null;
-}
-
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
     Console.WriteLine("CarPi OBD2 CLI Tool");
@@ -49,15 +43,18 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("Usage:");
     Console.WriteLine("  CarPi --list-ports              List available serial ports");
     Console.WriteLine("  CarPi --scan-bluetooth          Scan for paired Bluetooth OBD2 adapters");
-    Console.WriteLine("  CarPi --port <port>             Connect to OBD2 device and dump values");
+    Console.WriteLine("  CarPi --scan-ble                Scan for BLE OBD2 adapters (Linux only)");
+    Console.WriteLine("  CarPi --port <port>             Connect via serial port");
+    Console.WriteLine("  CarPi --ble <mac>               Connect via BLE to device MAC address");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --port <port>       Serial port (e.g., /dev/ttyUSB0, COM3, /dev/rfcomm0)");
-    Console.WriteLine("  --baud <rate>       Baud rate (default: 115200)");
+    Console.WriteLine("  --baud <rate>       Baud rate (default: 38400)");
+    Console.WriteLine("  --ble <mac>         BLE device MAC address (Linux only)");
     Console.WriteLine("  --list-ports        List available serial ports");
     Console.WriteLine("  --scan-bluetooth    Scan for paired Bluetooth OBD2 devices");
-    Console.WriteLine("  --bluetooth-mac <x>  Bluetooth MAC address for auto-binding on Linux");
-    Console.WriteLine("                       Use with --port /dev/rfcomm0");
+    Console.WriteLine("  --scan-ble          Scan for BLE OBD2 devices (Linux only)");
+    Console.WriteLine("  --bluetooth-mac <x> Bluetooth MAC for RFCOMM auto-binding on Linux");
     return 0;
 }
 
@@ -79,24 +76,74 @@ if (args.Contains("--list-ports"))
     return 0;
 }
 
+if (args.Contains("--scan-ble"))
+{
+    if (!OperatingSystem.IsLinux())
+    {
+        Console.Error.WriteLine("BLE scanning requires Linux with BlueZ.");
+        return 1;
+    }
+
+    Console.WriteLine("Scanning for BLE devices (10 seconds)...");
+    Console.WriteLine();
+
+    var adapters = await BlueZManager.GetAdaptersAsync();
+    if (adapters.Count == 0)
+    {
+        Console.Error.WriteLine("No Bluetooth adapters found.");
+        return 1;
+    }
+
+    var adapter = adapters[0];
+    var found = new List<(string Address, string Name)>();
+
+    adapter.DeviceFound += async (Adapter sender, DeviceFoundEventArgs eventArgs) =>
+    {
+        var device = eventArgs.Device;
+        var address = await device.GetAddressAsync();
+        var name = "(unknown)";
+        try { name = await device.GetNameAsync(); } catch { }
+
+        if (!found.Any(f => f.Address == address))
+        {
+            found.Add((address, name));
+            var marker = IsLikelyObd(name) ? " <-- possible OBD2 adapter" : "";
+            Console.WriteLine($"  {address}  {name}{marker}");
+        }
+    };
+
+    await adapter.StartDiscoveryAsync();
+    await Task.Delay(10000);
+    await adapter.StopDiscoveryAsync();
+
+    if (found.Count == 0)
+    {
+        Console.WriteLine("  (no devices found)");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Use --ble <MAC> to connect to a device.");
+    return 0;
+}
+
 if (args.Contains("--scan-bluetooth"))
 {
     Console.WriteLine("Scanning for Bluetooth OBD2 adapters...");
     Console.WriteLine();
-    
+
     var isMac = OperatingSystem.IsMacOS();
     var isLinux = OperatingSystem.IsLinux();
-    
+
     if (isMac)
     {
         Console.WriteLine("Platform: macOS");
         Console.WriteLine();
         Console.WriteLine("Looking for paired Bluetooth devices that may be OBD2 adapters...");
-        
+
         var ttyPorts = SerialPort.GetPortNames()
             .Where(p => p.Contains("Bluetooth") || p.Contains("Serial"))
             .ToList();
-        
+
         if (ttyPorts.Any())
         {
             Console.WriteLine("Possible Bluetooth serial ports:");
@@ -119,7 +166,7 @@ if (args.Contains("--scan-bluetooth"))
     {
         Console.WriteLine("Platform: Linux");
         Console.WriteLine();
-        
+
         if (Directory.Exists("/dev/rfcomm"))
         {
             var rfcommPorts = Directory.GetFiles("/dev/rfcomm");
@@ -140,13 +187,13 @@ if (args.Contains("--scan-bluetooth"))
                 Console.WriteLine("2. The CLI will auto-bind when connecting with --bluetooth-mac");
             }
         }
-        
+
         Console.WriteLine();
         Console.WriteLine("Also checking for USB serial adapters...");
         var usbPorts = SerialPort.GetPortNames()
             .Where(p => p.Contains("USB") || p.Contains("ACM"))
             .ToList();
-        
+
         if (usbPorts.Any())
         {
             Console.WriteLine("USB serial ports:");
@@ -164,63 +211,72 @@ if (args.Contains("--scan-bluetooth"))
             Console.WriteLine($"  {p}");
         }
     }
-    
+
     return 0;
 }
 
-string? bluetoothMac = GetArgumentValue(args, "--bluetooth-mac");
-if (string.IsNullOrEmpty(bluetoothMac))
-{
-    bluetoothMac = appConfig.BluetoothMac;
-}
-
+// Determine transport mode: BLE or serial
+bool useBle = !string.IsNullOrEmpty(appConfig.BleMac);
 string? port = appConfig.SerialPort;
-if (string.IsNullOrEmpty(port))
+
+if (!useBle && string.IsNullOrEmpty(port))
 {
-    Console.Error.WriteLine("Error: No port specified. Use --port or set SerialPort in config.");
+    Console.Error.WriteLine("Error: No connection specified. Use --port <port> or --ble <mac>.");
     return 1;
 }
 
-Console.WriteLine($"Connecting to OBD2 device on {port}...");
-
+IObdTransport transport;
 bool boundRfcomm = false;
 
 try
 {
-    if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(bluetoothMac) && port?.StartsWith("/dev/rfcomm") == true)
+    if (useBle)
     {
-        Console.WriteLine($"Binding Bluetooth RFCOMM to {bluetoothMac}...");
-        var bindResult = await RunRfcommBindAsync(bluetoothMac, port);
-        if (!bindResult)
-        {
-            Console.Error.WriteLine("Failed to bind RFCOMM device. Is the car in range?");
-            return 1;
-        }
-        boundRfcomm = true;
-        await Task.Delay(500);
+        Console.WriteLine($"Connecting to BLE device {appConfig.BleMac}...");
+        transport = new BleObdTransport(appConfig.BleMac, logger);
     }
-    
-    using var obd = new ObdDevice(port, appConfig.BaudRate, appConfig.ReadTimeout, appConfig.WriteTimeout, logger);
-    
+    else
+    {
+        Console.WriteLine($"Connecting to OBD2 device on {port}...");
+
+        string? bluetoothMac = appConfig.BluetoothMac;
+        if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(bluetoothMac) && port!.StartsWith("/dev/rfcomm"))
+        {
+            Console.WriteLine($"Binding Bluetooth RFCOMM to {bluetoothMac}...");
+            var bindResult = await RunRfcommBindAsync(bluetoothMac, port);
+            if (!bindResult)
+            {
+                Console.Error.WriteLine("Failed to bind RFCOMM device. Is the car in range?");
+                return 1;
+            }
+            boundRfcomm = true;
+            await Task.Delay(500);
+        }
+
+        transport = new SerialObdTransport(port!, appConfig.BaudRate, appConfig.ReadTimeout, appConfig.WriteTimeout);
+    }
+
+    await using var obd = new ObdDevice(transport, logger);
+
     await obd.ConnectAsync(TimeSpan.FromMilliseconds(appConfig.ConnectionTimeout));
     Console.WriteLine("Connected successfully!");
-    
+
     Console.WriteLine();
     Console.WriteLine("Querying OBD2 PIDs...");
     Console.WriteLine();
-    
+
     var results = await obd.DumpAllPidsAsync();
-    
+
     foreach (var (pid, value) in results)
     {
         Console.WriteLine($"{pid}: {value}");
     }
-    
+
     Console.WriteLine();
     Console.WriteLine("Disconnecting...");
     await obd.DisconnectAsync();
     Console.WriteLine("Done.");
-    
+
     if (boundRfcomm && OperatingSystem.IsLinux() && !string.IsNullOrEmpty(port))
     {
         Console.WriteLine("Releasing RFCOMM binding...");
@@ -234,6 +290,13 @@ catch (Exception ex)
 }
 
 return 0;
+
+bool IsLikelyObd(string name)
+{
+    var lower = name.ToLowerInvariant();
+    return lower.Contains("obd") || lower.Contains("elm") || lower.Contains("v-link")
+        || lower.Contains("veepeak") || lower.Contains("vgate") || lower.Contains("konnwei");
+}
 
 async Task<bool> RunRfcommBindAsync(string mac, string device)
 {
@@ -285,54 +348,54 @@ public class AppConfig
 {
     public string SerialPort { get; set; } = string.Empty;
     public string BluetoothMac { get; set; } = string.Empty;
-    public int BaudRate { get; set; } = 115200;
+    public string BleMac { get; set; } = string.Empty;
+    public int BaudRate { get; set; } = 38400;
     public int ReadTimeout { get; set; } = 5000;
     public int WriteTimeout { get; set; } = 5000;
     public int ConnectionTimeout { get; set; } = 10000;
 }
 
-public class ObdDevice : IDisposable
+public class ObdDevice : IAsyncDisposable
 {
-    private readonly SerialPort _serial;
+    private readonly IObdTransport _transport;
     private readonly ILogger _logger;
-    private bool _connected;
-    private readonly object _lock = new();
 
-    public ObdDevice(string port, int baudRate, int readTimeout, int writeTimeout, ILogger logger)
+    public ObdDevice(IObdTransport transport, ILogger logger)
     {
-        _serial = new SerialPort(port, baudRate)
-        {
-            ReadTimeout = readTimeout,
-            WriteTimeout = writeTimeout,
-            DataBits = 8,
-            Parity = Parity.None,
-            StopBits = StopBits.One
-        };
+        _transport = transport;
         _logger = logger;
     }
 
     public async Task ConnectAsync(CancellationToken ct)
     {
-        _serial.Open();
-        _serial.DiscardInBuffer();
-        _serial.DiscardOutBuffer();
+        await _transport.OpenAsync(ct);
+        _transport.DiscardBuffers();
 
-        await SendCommandAsync("ATZ", ct);
+        Console.WriteLine("Sending ATZ...");
+        var atzResp = await SendCommandAsync("ATZ", ct);
+        Console.WriteLine($"ATZ response: '{atzResp}'");
+        Console.WriteLine("ATZ done, waiting...");
         await Task.Delay(1000, ct);
-        
+
+        Console.WriteLine("Sending ATE0...");
         var echo = await SendCommandAsync("ATE0", ct);
+        Console.WriteLine($"ATE0 response: {echo}");
         if (!echo.Contains("OK"))
         {
             _logger.LogWarning("AT echo disable failed, continuing...");
         }
-        
+
+        Console.WriteLine("Sending ATL0...");
         var headers = await SendCommandAsync("ATL0", ct);
-        
+        Console.WriteLine($"ATL0 response: {headers}");
+
+        Console.WriteLine("Sending ATSP0...");
         var spaces = await SendCommandAsync("ATSP0", ct);
-        
+        Console.WriteLine($"ATSP0 response: {spaces}");
+
+        Console.WriteLine("Sending 0100...");
         var protocol = await SendCommandAsync("0100", ct);
-        
-        _connected = true;
+        Console.WriteLine($"0100 response: {protocol}");
     }
 
     public async Task ConnectAsync(TimeSpan timeout)
@@ -343,59 +406,61 @@ public class ObdDevice : IDisposable
 
     public async Task DisconnectAsync()
     {
-        if (_serial.IsOpen)
+        if (_transport.IsOpen)
         {
             try
             {
                 await SendCommandAsync("ATPC", CancellationToken.None);
             }
             catch { }
-            
-            try
-            {
-                await SendCommandAsync("ATCV", CancellationToken.None);
-            }
-            catch { }
-            
-            _serial.Close();
+
+            await _transport.CloseAsync();
         }
-        _connected = false;
     }
 
     private async Task<string> SendCommandAsync(string command, CancellationToken ct)
     {
-        lock (_lock)
-        {
-            _serial.WriteLine(command);
-        }
-        
+        _transport.DiscardBuffers();
+        await _transport.WriteAsync(command, ct);
+
         await Task.Delay(200, ct);
-        
+
         var responses = new List<string>();
-        var timeout = _serial.ReadTimeout;
-        var endTime = DateTime.UtcNow.AddMilliseconds(timeout);
-        
-        while (DateTime.UtcNow < endTime)
+        var buffer = new StringBuilder();
+
+        using var timeout = new CancellationTokenSource(5000);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+
+        while (!linked.Token.IsCancellationRequested)
         {
-            try
+            var ch = await _transport.ReadCharAsync(linked.Token);
+            if (ch == null)
+                break;
+
+            if (ch == '>')
             {
-                var line = _serial.ReadLine();
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                
-                line = line.Trim();
-                
-                if (line == ">") break;
-                
-                if (line.StartsWith(command)) continue;
-                
-                responses.Add(line);
-            }
-            catch (TimeoutException)
-            {
+                var remaining = buffer.ToString().Trim();
+                if (!string.IsNullOrEmpty(remaining) && !remaining.StartsWith(command))
+                    responses.Add(remaining);
                 break;
             }
+
+            if (ch == '\r' || ch == '\n')
+            {
+                var line = buffer.ToString().Trim();
+                buffer.Clear();
+
+                if (string.IsNullOrEmpty(line)) continue;
+                if (line.StartsWith(command)) continue;
+
+                responses.Add(line);
+            }
+            else
+            {
+                buffer.Append(ch);
+            }
         }
-        
+
         return string.Join("\n", responses);
     }
 
@@ -404,24 +469,24 @@ public class ObdDevice : IDisposable
         try
         {
             var response = await SendCommandAsync(pid, ct);
-            
+
             if (response.Contains("NO DATA"))
             {
                 return null;
             }
-            
+
             if (response.Contains("UNABLE TO CONNECT") || response.Contains("ERROR"))
             {
                 return null;
             }
-            
+
             var parts = response.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var dataStart = Array.IndexOf(parts, "41");
             if (dataStart >= 0 && dataStart + 1 < parts.Length)
             {
                 return string.Join(" ", parts.Skip(dataStart));
             }
-            
+
             return response;
         }
         catch (Exception ex)
@@ -434,7 +499,7 @@ public class ObdDevice : IDisposable
     public async Task<Dictionary<string, string?>> DumpAllPidsAsync()
     {
         var results = new Dictionary<string, string?>();
-        
+
         var pids = new (string Code, string Name)[]
         {
             ("010C", "Engine RPM"),
@@ -468,23 +533,19 @@ public class ObdDevice : IDisposable
             ("011E", "Fuel Rail Gauge Pressure"),
             ("011F", "Engine Run Time"),
         };
-        
+
         foreach (var (code, name) in pids)
         {
             var value = await QueryPidAsync(code, CancellationToken.None);
             results[$"{code} ({name})"] = value;
             await Task.Delay(50);
         }
-        
+
         return results;
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        if (_serial.IsOpen)
-        {
-            _serial.Close();
-        }
-        _serial.Dispose();
+        await _transport.DisposeAsync();
     }
 }
