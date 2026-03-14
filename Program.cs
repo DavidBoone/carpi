@@ -37,12 +37,14 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine();
     Console.WriteLine("Usage:");
     Console.WriteLine("  CarPi --list-ports              List available serial ports");
+    Console.WriteLine("  CarPi --scan-bluetooth          Scan for paired Bluetooth OBD2 adapters");
     Console.WriteLine("  CarPi --port <port>             Connect to OBD2 device and dump values");
     Console.WriteLine();
     Console.WriteLine("Options:");
-    Console.WriteLine("  --port <port>     Serial port (e.g., /dev/ttyUSB0, COM3)");
+    Console.WriteLine("  --port <port>     Serial port (e.g., /dev/ttyUSB0, COM3, /dev/rfcomm0)");
     Console.WriteLine("  --baud <rate>     Baud rate (default: 115200)");
     Console.WriteLine("  --list-ports      List available serial ports");
+    Console.WriteLine("  --scan-bluetooth  Scan for paired Bluetooth OBD2 devices");
     return 0;
 }
 
@@ -61,6 +63,96 @@ if (args.Contains("--list-ports"))
             Console.WriteLine($"  {p}");
         }
     }
+    return 0;
+}
+
+if (args.Contains("--scan-bluetooth"))
+{
+    Console.WriteLine("Scanning for Bluetooth OBD2 adapters...");
+    Console.WriteLine();
+    
+    var isMac = OperatingSystem.IsMacOS();
+    var isLinux = OperatingSystem.IsLinux();
+    
+    if (isMac)
+    {
+        Console.WriteLine("Platform: macOS");
+        Console.WriteLine();
+        Console.WriteLine("Looking for paired Bluetooth devices that may be OBD2 adapters...");
+        
+        var ttyPorts = SerialPort.GetPortNames()
+            .Where(p => p.Contains("Bluetooth") || p.Contains("Serial"))
+            .ToList();
+        
+        if (ttyPorts.Any())
+        {
+            Console.WriteLine("Possible Bluetooth serial ports:");
+            foreach (var p in ttyPorts)
+            {
+                Console.WriteLine($"  {p}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("No Bluetooth serial ports found.");
+            Console.WriteLine();
+            Console.WriteLine("To use a Bluetooth OBD2 adapter on macOS:");
+            Console.WriteLine("1. Pair the device in System Preferences > Bluetooth");
+            Console.WriteLine("2. Set up as 'Serial Port Device' in Bluetooth settings");
+            Console.WriteLine("3. The port will appear here (e.g., /dev/cu.Bluetooth-MAC)");
+        }
+    }
+    else if (isLinux)
+    {
+        Console.WriteLine("Platform: Linux");
+        Console.WriteLine();
+        
+        if (Directory.Exists("/dev/rfcomm"))
+        {
+            var rfcommPorts = Directory.GetFiles("/dev/rfcomm");
+            if (rfcommPorts.Any())
+            {
+                Console.WriteLine("RFCOMM devices:");
+                foreach (var p in rfcommPorts)
+                {
+                    Console.WriteLine($"  {p}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("No RFCOMM devices bound.");
+                Console.WriteLine();
+                Console.WriteLine("To connect a Bluetooth OBD2 adapter:");
+                Console.WriteLine("1. Pair: bluetoothctl -> pair <MAC>");
+                Console.WriteLine("2. Bind: sudo rfcomm bind /dev/rfcomm0 <MAC>");
+                Console.WriteLine("3. Then run with --port /dev/rfcomm0");
+            }
+        }
+        
+        Console.WriteLine();
+        Console.WriteLine("Also checking for USB serial adapters...");
+        var usbPorts = SerialPort.GetPortNames()
+            .Where(p => p.Contains("USB") || p.Contains("ACM"))
+            .ToList();
+        
+        if (usbPorts.Any())
+        {
+            Console.WriteLine("USB serial ports:");
+            foreach (var p in usbPorts)
+            {
+                Console.WriteLine($"  {p}");
+            }
+        }
+    }
+    else
+    {
+        Console.WriteLine("Unknown platform - checking serial ports anyway:");
+        foreach (var p in SerialPort.GetPortNames())
+        {
+            Console.WriteLine($"  {p}");
+        }
+    }
+    
     return 0;
 }
 
