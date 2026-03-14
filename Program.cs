@@ -552,17 +552,21 @@ public class ObdDevice : IAsyncDisposable
         }
     }
 
-    public async Task<string> SendCommandAsync(string command, CancellationToken ct)
+    public Task<string> SendCommandAsync(string command, CancellationToken ct)
+        => SendCommandAsync(command, 200, 5000, ct);
+
+    public async Task<string> SendCommandAsync(string command, int writeDelayMs, int readTimeoutMs, CancellationToken ct)
     {
         _transport.DiscardBuffers();
         await _transport.WriteAsync(command, ct);
 
-        await Task.Delay(200, ct);
+        if (writeDelayMs > 0)
+            await Task.Delay(writeDelayMs, ct);
 
         var responses = new List<string>();
         var buffer = new StringBuilder();
 
-        using var timeout = new CancellationTokenSource(5000);
+        using var timeout = new CancellationTokenSource(readTimeoutMs);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
 
         while (!linked.Token.IsCancellationRequested)

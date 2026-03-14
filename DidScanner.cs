@@ -59,6 +59,10 @@ public class DidScanner
             return;
         }
 
+        // Speed up scanning: reduce ELM327's own response timeout
+        // ATST sets timeout in units of 4ms. 0A = 40ms (vs default ~200ms)
+        await _obd.SendCommandAsync("ATST 0A", ct);
+
         // Load existing results to merge with
         var scanResult = await LoadExistingAsync(outputFile);
         var now = DateTime.UtcNow;
@@ -71,7 +75,8 @@ public class DidScanner
             scanned++;
 
             var cmd = $"22{did:X4}";
-            var response = await _obd.SendCommandAsync(cmd, ct);
+            // Use fast timing: 50ms write delay, 500ms read timeout
+            var response = await _obd.SendCommandAsync(cmd, 50, 500, ct);
 
             // Filter out non-data responses:
             // - Empty or standard ELM327 errors
@@ -84,7 +89,6 @@ public class DidScanner
             {
                 if (did % 256 == 0)
                     Console.Write($"\r  Scanned {scanned}/{endDid - startDid + 1}, found {foundCount}...");
-                await Task.Delay(20, ct);
                 continue;
             }
 
@@ -112,9 +116,10 @@ public class DidScanner
                 scanResult.Entries.Add(entry);
 
             Console.WriteLine($"  FOUND: {cmd} -> {hexBytes} ({dataByteCount} bytes)");
-
-            await Task.Delay(30, ct);
         }
+
+        // Restore default ELM327 timeout
+        await _obd.SendCommandAsync("ATST FF", ct);
 
         Console.WriteLine();
         Console.WriteLine($"Scan complete: {foundCount} DIDs responded out of {scanned} scanned.");
