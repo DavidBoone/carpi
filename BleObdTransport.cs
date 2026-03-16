@@ -54,13 +54,13 @@ public class BleObdTransport : IObdTransport
 
         _logger.LogInformation("Connecting to {Address}...", _deviceAddress);
         await _device.ConnectAsync();
-        await ((IDevice1)_device).WaitForPropertyValueAsync("Connected", value: true, TimeSpan.FromSeconds(15));
+        await _device.WaitForPropertyValueAsync("Connected", value: true, TimeSpan.FromSeconds(15));
 
         _logger.LogInformation("Waiting for GATT services...");
-        await ((IDevice1)_device).WaitForPropertyValueAsync("ServicesResolved", value: true, TimeSpan.FromSeconds(15));
+        await _device.WaitForPropertyValueAsync("ServicesResolved", value: true, TimeSpan.FromSeconds(15));
 
-        var service = await ((IDevice1)_device).GetServiceAsync(ServiceUuid)
-                   ?? await ((IDevice1)_device).GetServiceAsync(AltServiceUuid);
+        var service = await _device.GetServiceAsync(ServiceUuid)
+                   ?? await _device.GetServiceAsync(AltServiceUuid);
 
         if (service == null)
             throw new InvalidOperationException(
