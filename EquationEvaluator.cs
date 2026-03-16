@@ -36,6 +36,19 @@ public static class EquationEvaluator
                 }
             }
 
+            // Indexed byte reference $N (e.g., $0, $191) for bulk/long responses
+            if (c == '$' && i + 1 < eq.Length && char.IsDigit(eq[i + 1]))
+            {
+                i++; // skip $
+                int start = i;
+                while (i < eq.Length && char.IsDigit(eq[i]))
+                    i++;
+                int idx = int.Parse(eq[start..i]);
+                double val = idx < data.Length ? data[idx] : 0;
+                tokens.Add(new Token(TokenType.Number, val));
+                continue;
+            }
+
             // Byte references A-D (case-insensitive)
             if ((c is 'A' or 'a' or 'B' or 'b' or 'C' or 'c' or 'D' or 'd') &&
                 !IsPartOfWord(eq, i))
