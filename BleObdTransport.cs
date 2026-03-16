@@ -60,12 +60,10 @@ public class BleObdTransport : IObdTransport
         await _device.WaitForPropertyValueAsync("ServicesResolved", value: true, TimeSpan.FromSeconds(15));
 
         var service = await _device.GetServiceAsync(ServiceUuid)
-                   ?? await _device.GetServiceAsync(AltServiceUuid);
-
-        if (service == null)
-            throw new InvalidOperationException(
-                $"ELM327 GATT service not found (tried {ServiceUuid} and {AltServiceUuid}). " +
-                "This device may not be an ELM327 BLE adapter.");
+                   ?? await _device.GetServiceAsync(AltServiceUuid)
+                   ?? throw new InvalidOperationException(
+                       $"ELM327 GATT service not found (tried {ServiceUuid} and {AltServiceUuid}). " +
+                       "This device may not be an ELM327 BLE adapter.");
 
         var serviceUuid = await service.GetUUIDAsync();
         _logger.LogInformation("Found GATT service: {UUID}", serviceUuid);
@@ -75,15 +73,13 @@ public class BleObdTransport : IObdTransport
         string notifyUuid = isAltService ? AltCharUuid : NotifyCharUuid;
         string writeUuid = isAltService ? AltCharUuid : WriteCharUuid;
 
-        _notifyChar = (GattCharacteristic?)await service.GetCharacteristicAsync(notifyUuid);
-        if (_notifyChar == null)
-            throw new InvalidOperationException($"Notify characteristic {notifyUuid} not found.");
+        _notifyChar = await service.GetCharacteristicAsync(notifyUuid)
+            ?? throw new InvalidOperationException($"Notify characteristic {notifyUuid} not found.");
 
         if (writeUuid != notifyUuid)
         {
-            _writeChar = (GattCharacteristic?)await service.GetCharacteristicAsync(writeUuid);
-            if (_writeChar == null)
-                throw new InvalidOperationException($"Write characteristic {writeUuid} not found.");
+            _writeChar = await service.GetCharacteristicAsync(writeUuid)
+                ?? throw new InvalidOperationException($"Write characteristic {writeUuid} not found.");
         }
         else
         {
