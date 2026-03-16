@@ -2,37 +2,34 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
-public class DidScanEntry
+public class DidResponse
 {
-    [JsonPropertyName("header")]
-    public string Header { get; set; } = "";
-
-    [JsonPropertyName("did")]
-    public string Did { get; set; } = "";
-
-    [JsonPropertyName("command")]
-    public string Command { get; set; } = "";
-
-    [JsonPropertyName("dataBytes")]
-    public string DataBytes { get; set; } = "";
+    [JsonPropertyName("data")]
+    public string? Data { get; set; }
 
     [JsonPropertyName("byteCount")]
     public int ByteCount { get; set; }
 
-    [JsonPropertyName("rawResponse")]
-    public string RawResponse { get; set; } = "";
+    [JsonPropertyName("raw")]
+    public string Raw { get; set; } = "";
 
-    [JsonPropertyName("scannedAt")]
-    public DateTime ScannedAt { get; set; }
+    [JsonPropertyName("at")]
+    public DateTime At { get; set; }
 }
 
-public class DidScanResult
+public class DidEntry
 {
-    [JsonPropertyName("entries")]
-    public List<DidScanEntry> Entries { get; set; } = [];
+    [JsonPropertyName("lastResponse")]
+    public DidResponse LastResponse { get; set; } = new();
 
-    [JsonPropertyName("lastUpdated")]
-    public DateTime LastUpdated { get; set; }
+    [JsonPropertyName("lastPositiveResponse")]
+    public DidResponse? LastPositiveResponse { get; set; }
+}
+
+// Root format: { "7E0": { "2068": { ... }, "2069": { ... } }, "7E4": { ... } }
+// Using sorted dictionaries so ECUs and DIDs appear in order
+public class DidScanResult : SortedDictionary<string, SortedDictionary<string, DidEntry>>
+{
 }
 
 public class DidScanner
@@ -73,6 +70,12 @@ public class DidScanner
 
         // Load existing results to merge with
         var scanResult = await LoadExistingAsync(outputFile);
+        if (!scanResult.TryGetValue(header, out var ecuDids))
+        {
+            ecuDids = new SortedDictionary<string, DidEntry>();
+            scanResult[header] = ecuDids;
+        }
+
         var now = DateTime.UtcNow;
         int foundCount = 0;
         int scanned = 0;
@@ -82,20 +85,34 @@ public class DidScanner
             ct.ThrowIfCancellationRequested();
             scanned++;
 
-            var cmd = $"22{did:X4}";
+            var didHex = $"{did:X4}";
+            var cmd = $"22{didHex}";
             // Use fast timing: 50ms write delay, 500ms read timeout
             var response = await _obd.SendCommandAsync(cmd, 50, 500, ct);
 
-            // Filter out non-data responses:
-            // - Empty or standard ELM327 errors
-            // - UDS negative response: 7F XX YY (service rejected)
-            if (string.IsNullOrEmpty(response) ||
+            var isNegative = string.IsNullOrEmpty(response) ||
                 response.Contains("NO DATA") ||
                 response.Contains("ERROR") ||
                 response.Contains("UNABLE TO CONNECT") ||
-                response.TrimStart().StartsWith("7F"))
+                response.TrimStart().StartsWith("7F");
+
+            if (isNegative)
             {
-                if (did % 256 == 0)
+                // Record the negative response
+                var negResponse = new DidResponse
+                {
+                    Data = null,
+                    ByteCount = 0,
+                    Raw = response?.Replace('\n', ' ') ?? "",
+                    At = now
+                };
+
+                if (ecuDids.TryGetValue(didHex, out var existing))
+                    existing.LastResponse = negResponse;
+                else
+                    ecuDids[didHex] = new DidEntry { LastResponse = negResponse };
+
+                if (scanned % 64 == 0)
                     Console.Write($"\r  Scanned {scanned}/{endDid - startDid + 1}, found {foundCount}...");
                 continue;
             }
@@ -104,24 +121,27 @@ public class DidScanner
             var hexBytes = ExtractDataBytes(response);
             var dataByteCount = hexBytes.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
 
-            var entry = new DidScanEntry
+            var posResponse = new DidResponse
             {
-                Header = header,
-                Did = $"{did:X4}",
-                Command = cmd,
-                DataBytes = hexBytes,
+                Data = hexBytes,
                 ByteCount = dataByteCount,
-                RawResponse = response.Replace('\n', ' '),
-                ScannedAt = now
+                Raw = response.Replace('\n', ' '),
+                At = now
             };
 
-            // Update or add entry (keyed by header + DID)
-            var existingIdx = scanResult.Entries.FindIndex(
-                e => e.Header == header && e.Did == entry.Did);
-            if (existingIdx >= 0)
-                scanResult.Entries[existingIdx] = entry;
+            if (ecuDids.TryGetValue(didHex, out var entry))
+            {
+                entry.LastResponse = posResponse;
+                entry.LastPositiveResponse = posResponse;
+            }
             else
-                scanResult.Entries.Add(entry);
+            {
+                ecuDids[didHex] = new DidEntry
+                {
+                    LastResponse = posResponse,
+                    LastPositiveResponse = posResponse
+                };
+            }
 
             Console.WriteLine($"  FOUND: {cmd} -> {hexBytes} ({dataByteCount} bytes)");
         }
@@ -135,17 +155,9 @@ public class DidScanner
 
         Console.WriteLine();
         Console.WriteLine($"Scan complete: {foundCount} DIDs responded out of {scanned} scanned.");
-        Console.WriteLine($"Total known DIDs across all scans: {scanResult.Entries.Count}");
 
         if (!string.IsNullOrEmpty(outputFile))
         {
-            scanResult.LastUpdated = now;
-            // Sort entries by header then DID for readability
-            scanResult.Entries.Sort((a, b) =>
-            {
-                var hcmp = string.Compare(a.Header, b.Header, StringComparison.Ordinal);
-                return hcmp != 0 ? hcmp : string.Compare(a.Did, b.Did, StringComparison.Ordinal);
-            });
             await SaveAsync(outputFile, scanResult);
             Console.WriteLine($"Results saved to {outputFile}");
         }
