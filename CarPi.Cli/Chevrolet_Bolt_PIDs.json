@@ -26777,7 +26777,7 @@
           "id": "7E4:2243A5:charges:0",
           "name": "Battery - Number of Charges",
           "shortName": "# Charges",
-          "units": "",
+          "units": "count",
           "minValue": 0,
           "maxValue": 1000,
           "decodeOverride": {
@@ -29771,7 +29771,7 @@
           "maxValue": 5000,
           "decodeOverride": {
             "decoder": null,
-            "legacyEquation": "((A*256)\u002BB)",
+            "legacyEquation": "A",
             "decoderKind": null,
             "parameters": null
           },

@@ -25,6 +25,10 @@ var configuration = configBuilder.Build();
 var appConfig = new AppConfig();
 configuration.Bind(appConfig);
 
+int verbosity = args.Count(a => a == "-v")
+    + (args.Contains("-vv") ? 2 : 0)
+    + (args.Contains("-vvv") ? 3 : 0);
+
 using var loggerFactory = LoggerFactory.Create(builder =>
 {
     builder
@@ -35,6 +39,19 @@ using var loggerFactory = LoggerFactory.Create(builder =>
             options.SingleLine = true;
             options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
         });
+
+    // Default: Warning+ only (quiet — just console output for results)
+    // -v:   Info   (connect milestones, adapter identity)
+    // -vv:  Debug  (ECU skips, NRC decodes, loading details)
+    // -vvv: Trace  (every AT command, every response, stale '>' handling)
+    var minLevel = verbosity switch
+    {
+        >= 3 => LogLevel.Trace,
+        2 => LogLevel.Debug,
+        1 => LogLevel.Information,
+        _ => LogLevel.Warning
+    };
+    builder.SetMinimumLevel(minLevel);
 });
 
 var logger = loggerFactory.CreateLogger<Program>();
@@ -63,6 +80,7 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("  --pid-filter <f>    PID priority filter (default: *!)");
     Console.WriteLine("                      * = common, ! = important, + = cell voltages");
     Console.WriteLine("                      - = advanced, ? = unknown, all = everything");
+    Console.WriteLine("  --probe-ecus        Check which known ECUs are online");
     Console.WriteLine("  --scan-dids <header> <start> <end>  Scan DID range on an ECU");
     Console.WriteLine("                      e.g., --scan-dids 7E4 0000 FFFF");
     Console.WriteLine("  --scan-dids-all     Scan common DID ranges on all known ECUs");
@@ -71,8 +89,12 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("                      Outputs scan_report.html (no vehicle connection needed)");
     Console.WriteLine("  --import-csv <f>    Import legacy PID CSV and write canonical JSON");
     Console.WriteLine("  --normalize-defs <f> Normalize canonical JSON seed data");
+    Console.WriteLine("  --validate <f>      Validate canonical JSON definitions");
     Console.WriteLine("  --out <f>           Output path for --import-csv (default: Chevrolet_Bolt_PIDs.json)");
     Console.WriteLine("  --vehicle <name>    Vehicle name metadata for --import-csv");
+    Console.WriteLine("  -v                  Info logging (connect milestones)");
+    Console.WriteLine("  -vv                 Debug logging (ECU skips, NRC decodes)");
+    Console.WriteLine("  -vvv                Trace logging (AT commands, raw responses)");
     return 0;
 }
 
@@ -192,6 +214,44 @@ if (args.Contains("--normalize-defs"))
 
     Console.WriteLine($"Normalized canonical JSON from {inputPath}");
     Console.WriteLine($"Wrote normalized JSON to {outputPath}");
+    return 0;
+}
+
+if (args.Contains("--validate"))
+{
+    var inputPath = GetArgumentValue(args, "--validate");
+    if (string.IsNullOrWhiteSpace(inputPath))
+    {
+        Console.Error.WriteLine("Usage: --validate <definitions.json>");
+        return 1;
+    }
+
+    if (!File.Exists(inputPath))
+    {
+        Console.Error.WriteLine($"Definitions file not found: {inputPath}");
+        return 1;
+    }
+
+    if (!inputPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine($"Validation requires a canonical JSON file, got: {inputPath}");
+        return 1;
+    }
+
+    var catalog = DefinitionCatalog.LoadFromJson(inputPath);
+    var result = DefinitionCatalogValidator.Validate(catalog);
+
+    Console.WriteLine($"Validated {catalog.Signals.Count} signals from {inputPath}");
+    Console.WriteLine(result.Summary());
+
+    if (!result.IsValid)
+    {
+        Console.WriteLine();
+        foreach (var error in result.Errors)
+            Console.WriteLine($"  [{error.Area}] {error.SignalId}: {error.Message}");
+        return 1;
+    }
+
     return 0;
 }
 
@@ -317,12 +377,12 @@ try
 {
     if (useBle)
     {
-        Console.WriteLine($"Connecting to BLE device {appConfig.BleMac}...");
+        logger.LogInformation("Connecting to BLE device {Mac}", appConfig.BleMac);
         transport = new BleObdTransport(appConfig.BleMac, logger);
     }
     else
     {
-        Console.WriteLine($"Connecting to OBD2 device on {port}...");
+        logger.LogInformation("Connecting to OBD2 device on {Port}", port);
 
         string? bluetoothMac = appConfig.BluetoothMac;
         if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(bluetoothMac) && port!.StartsWith("/dev/rfcomm"))
@@ -343,15 +403,131 @@ try
 
     await using var obd = new ObdDevice(transport, logger);
 
-    await obd.ConnectAsync(TimeSpan.FromMilliseconds(appConfig.ConnectionTimeout));
-    Console.WriteLine("Connected successfully!");
-    Console.WriteLine();
+    await obd.ConnectAsync(CancellationToken.None);
+    logger.LogInformation("Connected");
+
+    // ECU probe mode
+    if (args.Contains("--probe-ecus"))
+    {
+        var scanner = new DidScanner(obd, logger);
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new DataSnapshot
+        {
+            Timestamp = now,
+            Command = "probe-ecus"
+        };
+
+        Console.WriteLine("Probing ECU addresses...");
+
+        foreach (var (header, name) in DidScanner.ProbeAddresses)
+        {
+            var alive = await scanner.ProbeEcuAsync(header, CancellationToken.None);
+            var status = alive ? "ONLINE" : "no response";
+            Console.WriteLine($"  {header}  {name,-30} {status}");
+            snapshot.Ecus.Add(new EcuStatus { Header = header, Name = name, Online = alive });
+        }
+
+        var snapshotPath = DataSnapshot.GenerateFileName(now);
+        snapshot.Save(snapshotPath);
+        logger.LogInformation("Snapshot saved to {Path}", snapshotPath);
+        logger.LogDebug("Disconnecting");
+        await obd.DisconnectAsync();
+        return 0;
+    }
 
     // DID scanning mode
     if (args.Contains("--scan-dids-all") || args.Contains("--scan-dids"))
     {
         var scanOutput = GetArgumentValue(args, "--scan-output") ?? "scan_results.json";
         var scanner = new DidScanner(obd, logger);
+        var now = DateTimeOffset.UtcNow;
+
+        // Load definitions for cross-referencing discovered DIDs
+        var scanDefsPath = ResolveDefinitionPath(appConfig.PidCsv);
+        var knownDids = new Dictionary<string, List<ResolvedPid>>(StringComparer.OrdinalIgnoreCase);
+        string? scanDefsSource = null;
+
+        if (File.Exists(scanDefsPath))
+        {
+            var catalog = scanDefsPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                ? DefinitionCatalog.LoadFromJson(scanDefsPath)
+                : DefinitionCatalog.FromBoltPids(BoltPidLoader.LoadFromCsv(scanDefsPath));
+
+            foreach (var rp in catalog.ToResolvedPids())
+            {
+                if (!rp.Pid.IsUds) continue;
+                var key = $"{rp.Pid.Header}:{rp.Pid.ModeAndPid[2..]}";
+                if (!knownDids.TryGetValue(key, out var list))
+                {
+                    list = [];
+                    knownDids[key] = list;
+                }
+                list.Add(rp);
+            }
+
+            scanDefsSource = Path.GetFileName(scanDefsPath);
+            Console.WriteLine($"Loaded {knownDids.Count} known DIDs from {scanDefsPath}");
+        }
+
+        var snapshot = new DataSnapshot
+        {
+            Timestamp = now,
+            Command = args.Contains("--scan-dids-all") ? "scan-dids-all" : "scan-dids",
+            DefinitionSource = scanDefsSource
+        };
+
+        void OnDidFound(string ecu, string did, string dataBytes, int byteCount)
+        {
+            var key = $"{ecu}:{did}";
+            if (knownDids.TryGetValue(key, out var matches))
+            {
+                // Parse data bytes for decoding
+                var bytes = dataBytes.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .Where(h => h.Length == 2)
+                    .Select(h => Convert.ToByte(h, 16))
+                    .ToArray();
+
+                foreach (var rp in matches)
+                {
+                    double? value = null;
+                    try
+                    {
+                        value = rp.Pid.Decoder != null
+                            ? rp.Pid.Decoder.Evaluate(bytes)
+                            : !string.IsNullOrWhiteSpace(rp.Pid.Equation)
+                                ? EquationEvaluator.Evaluate(rp.Pid.Equation, bytes)
+                                : null;
+                    }
+                    catch { }
+
+                    snapshot.Readings.Add(new SignalReading
+                    {
+                        SignalId = rp.SignalId,
+                        BindingId = rp.BindingId,
+                        PresentationId = rp.PresentationId,
+                        Ecu = ecu,
+                        Did = did,
+                        Name = rp.Pid.ShortName,
+                        Value = value,
+                        Units = rp.Pid.Units,
+                        FormattedValue = value.HasValue ? $"{value.Value:F2} {rp.Pid.Units}".Trim() : null,
+                        DataBytes = dataBytes,
+                        ByteCount = byteCount
+                    });
+                }
+            }
+            else
+            {
+                snapshot.Readings.Add(new SignalReading
+                {
+                    Ecu = ecu,
+                    Did = did,
+                    Name = $"{ecu}:22{did}",
+                    DataBytes = dataBytes,
+                    ByteCount = byteCount
+                });
+            }
+        }
 
         if (args.Contains("--scan-dids-all"))
         {
@@ -359,15 +535,13 @@ try
             Console.WriteLine("(This will take a while)");
             Console.WriteLine();
 
-            var allResults = new List<string> { "Header,Command,DataBytes,RawResponse" };
-
             foreach (var (ecuHeader, ecuName) in DidScanner.KnownEcus)
             {
                 Console.WriteLine($"=== {ecuName} ({ecuHeader}) ===");
                 foreach (var (start, end, desc) in DidScanner.CommonRanges)
                 {
                     Console.WriteLine($"  Range: {desc} ({start:X4}-{end:X4})");
-                    await scanner.ScanAsync(ecuHeader, start, end, scanOutput, CancellationToken.None);
+                    await scanner.ScanAsync(ecuHeader, start, end, scanOutput, OnDidFound, CancellationToken.None);
                 }
                 Console.WriteLine();
             }
@@ -397,44 +571,49 @@ try
             var startDid = Convert.ToInt32(startHex, 16);
             var endDid = Convert.ToInt32(endHex, 16);
 
-            await scanner.ScanAsync(scanHeader, startDid, endDid, scanOutput, CancellationToken.None);
+            await scanner.ScanAsync(scanHeader, startDid, endDid, scanOutput, OnDidFound, CancellationToken.None);
         }
 
-        Console.WriteLine();
-        Console.WriteLine("Disconnecting...");
+        var snapshotPath = DataSnapshot.GenerateFileName(now);
+        snapshot.Save(snapshotPath);
+        logger.LogInformation("Snapshot saved to {Path}", snapshotPath);
+        logger.LogDebug("Disconnecting");
         await obd.DisconnectAsync();
-        Console.WriteLine("Done.");
         return 0;
     }
 
-    var csvPath = ResolveDefinitionPath(appConfig.PidCsv);
+    var defsPath = ResolveDefinitionPath(appConfig.PidCsv);
 
-    if (File.Exists(csvPath))
+    if (File.Exists(defsPath))
     {
-        Console.WriteLine($"Loading PIDs from {csvPath}...");
-        var allPids = BoltDefinitionLoader.Load(csvPath);
+        logger.LogDebug("Loading definitions from {Path}", defsPath);
+
+        var catalog = defsPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            ? DefinitionCatalog.LoadFromJson(defsPath)
+            : DefinitionCatalog.FromBoltPids(BoltPidLoader.LoadFromCsv(defsPath));
+
+        var allResolved = catalog.ToResolvedPids();
 
         // Filter by priority
         var filter = appConfig.PidFilter;
         if (string.IsNullOrEmpty(filter)) filter = "*!";
 
-        List<BoltPid> pidsToQuery;
+        List<ResolvedPid> toQuery;
         if (filter == "all")
         {
-            pidsToQuery = allPids.Where(p => !p.IsComputed).ToList();
+            toQuery = allResolved.Where(r => !r.Pid.IsComputed).ToList();
         }
         else
         {
-            pidsToQuery = allPids
-                .Where(p => !p.IsComputed && filter.Contains(p.Priority))
+            toQuery = allResolved
+                .Where(r => !r.Pid.IsComputed && filter.Contains(r.Pid.Priority))
                 .ToList();
         }
 
-        Console.WriteLine($"Querying {pidsToQuery.Count} PIDs (filter: {filter})...");
-        Console.WriteLine();
+        logger.LogDebug("Querying {Count} signals (filter: {Filter})", toQuery.Count, filter);
 
         var query = new BoltPidQuery(obd, logger);
-        var results = await query.QueryPidsAsync(pidsToQuery, CancellationToken.None);
+        var results = await query.QueryResolvedAsync(toQuery, CancellationToken.None);
 
         // Display grouped by header
         foreach (var headerGroup in results.GroupBy(r => r.Pid.Header))
@@ -449,11 +628,38 @@ try
             }
             Console.WriteLine();
         }
+
+        // Write timestamped snapshot
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new DataSnapshot
+        {
+            Timestamp = now,
+            Vehicle = catalog.Vehicle,
+            Command = "query",
+            DefinitionSource = Path.GetFileName(defsPath),
+            Filter = filter,
+            Readings = results.Select(r => new SignalReading
+            {
+                SignalId = r.SignalId,
+                BindingId = r.BindingId,
+                PresentationId = r.PresentationId,
+                Ecu = r.Pid.Header,
+                Did = r.Pid.IsUds ? r.Pid.ModeAndPid[2..] : null,
+                Name = r.Pid.ShortName,
+                Value = r.Value,
+                Units = r.Pid.Units,
+                FormattedValue = r.Value.HasValue ? r.FormattedValue : null,
+                RawResponse = r.RawResponse
+            }).ToList()
+        };
+
+        var snapshotPath = DataSnapshot.GenerateFileName(now);
+        snapshot.Save(snapshotPath);
+        logger.LogInformation("Snapshot saved to {Path}", snapshotPath);
     }
     else
     {
-        Console.WriteLine("Querying standard OBD2 PIDs...");
-        Console.WriteLine();
+        logger.LogDebug("No definitions found, querying standard OBD2 PIDs");
 
         var results = await obd.DumpAllPidsAsync();
         foreach (var (pid, value) in results)
@@ -462,10 +668,8 @@ try
         }
     }
 
-    Console.WriteLine();
-    Console.WriteLine("Disconnecting...");
+    logger.LogDebug("Disconnecting");
     await obd.DisconnectAsync();
-    Console.WriteLine("Done.");
 
     if (boundRfcomm && OperatingSystem.IsLinux() && !string.IsNullOrEmpty(port))
     {
@@ -604,31 +808,40 @@ public class ObdDevice : IAsyncDisposable
         await _transport.OpenAsync(ct);
         _transport.DiscardBuffers();
 
-        Console.WriteLine("Sending ATZ...");
+        // Reset adapter
         var atzResp = await SendCommandAsync("ATZ", ct);
-        Console.WriteLine($"ATZ response: '{atzResp}'");
-        Console.WriteLine("ATZ done, waiting...");
+        _logger.LogTrace("ATZ: {Response}", atzResp);
         await Task.Delay(1000, ct);
 
-        Console.WriteLine("Sending ATE0...");
+        // Disable echo, linefeeds, spaces — reduces BLE traffic significantly.
+        // ATS0 alone cuts ~33% of bytes for large responses.
         var echo = await SendCommandAsync("ATE0", ct);
-        Console.WriteLine($"ATE0 response: {echo}");
+        _logger.LogTrace("ATE0: {Response}", echo);
         if (!echo.Contains("OK"))
-        {
             _logger.LogWarning("AT echo disable failed, continuing...");
-        }
 
-        Console.WriteLine("Sending ATL0...");
-        var headers = await SendCommandAsync("ATL0", ct);
-        Console.WriteLine($"ATL0 response: {headers}");
+        _logger.LogTrace("ATL0: {Response}", await SendCommandAsync("ATL0", ct));
+        _logger.LogTrace("ATS0: {Response}", await SendCommandAsync("ATS0", ct));
 
-        Console.WriteLine("Sending ATSP0...");
-        var spaces = await SendCommandAsync("ATSP0", ct);
-        Console.WriteLine($"ATSP0 response: {spaces}");
+        // TODO: Make protocol configurable (e.g., via --protocol or appsettings).
+        // ATSP6 = ISO 15765-4 CAN 500kbps / 11-bit — correct for Chevy Bolt and most
+        // modern GM vehicles. Hardcoding skips the slow auto-detect search (ATSP0 + 0100)
+        // which can take 10-15+ seconds over BLE and is unreliable with tight timeouts.
+        // Other protocols: 7 = CAN 500k/29-bit, 8 = CAN 250k/11-bit.
+        _logger.LogTrace("ATSP6: {Response}", await SendCommandAsync("ATSP6", ct));
 
-        Console.WriteLine("Sending 0100...");
-        var protocol = await SendCommandAsync("0100", ct);
-        Console.WriteLine($"0100 response: {protocol}");
+        // ATSTFF: Max timeout (255 * 5ms = 1275ms). Cheap clones can timeout
+        // mid-response with the default 75ms when multi-frame ISO-TP takes longer.
+        _logger.LogTrace("ATSTFF: {Response}", await SendCommandAsync("ATSTFF", ct));
+
+        // NOTE: ATAL (Allow Long) was tried but causes this clone to output raw
+        // ISO-TP frames with sequence numbers instead of reassembled data, making
+        // frame drops more likely. Omitting it lets the adapter reassemble internally.
+
+        // Enable ISO-TP flow control. ATCFC1 lets the adapter manage FC frames.
+        _logger.LogTrace("ATCFC1: {Response}", await SendCommandAsync("ATCFC1", ct));
+
+        _logger.LogInformation("ELM327 initialized ({Adapter})", atzResp.Trim());
     }
 
     public async Task ConnectAsync(TimeSpan timeout)
@@ -652,18 +865,20 @@ public class ObdDevice : IAsyncDisposable
     }
 
     public Task<string> SendCommandAsync(string command, CancellationToken ct)
-        => SendCommandAsync(command, 200, 5000, ct);
+        => SendCommandAsync(command, 0, 5000, ct);
 
     public async Task<string> SendCommandAsync(string command, int writeDelayMs, int readTimeoutMs, CancellationToken ct)
     {
         _transport.DiscardBuffers();
         await _transport.WriteAsync(command, ct);
+        _logger.LogTrace("Sent: {Command}", command);
 
         if (writeDelayMs > 0)
             await Task.Delay(writeDelayMs, ct);
 
         var responses = new List<string>();
         var buffer = new StringBuilder();
+        bool receivedAnyData = false;
 
         using var timeout = new CancellationTokenSource(readTimeoutMs);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -676,10 +891,31 @@ public class ObdDevice : IAsyncDisposable
 
             if (ch == '>')
             {
+                if (!receivedAnyData)
+                {
+                    // Stale '>' from previous command arrived late over BLE.
+                    // Skip it and keep reading for the real response.
+                    _logger.LogTrace("Skipped stale '>' for {Command}", command);
+                    continue;
+                }
+
                 var remaining = buffer.ToString().Trim();
                 if (!string.IsNullOrEmpty(remaining) && !remaining.StartsWith(command))
                     responses.Add(remaining);
-                break;
+
+                // Cheap ELM327 clones can emit a premature '>' mid-response
+                // when their internal buffer overflows. Peek briefly for more data.
+                using var peekTimeout = new CancellationTokenSource(250);
+                using var peekLinked = CancellationTokenSource.CreateLinkedTokenSource(ct, peekTimeout.Token);
+                var next = await _transport.ReadCharAsync(peekLinked.Token);
+                if (next == null || next == '>')
+                    break; // Real end-of-response
+
+                // More data after '>': premature prompt, keep reading.
+                _logger.LogTrace("Premature '>' detected for {Command}, continuing read", command);
+                buffer.Append(next);
+                receivedAnyData = true;
+                continue;
             }
 
             if (ch == '\r' || ch == '\n')
@@ -691,14 +927,19 @@ public class ObdDevice : IAsyncDisposable
                 if (line.StartsWith(command)) continue;
 
                 responses.Add(line);
+                receivedAnyData = true;
             }
             else
             {
                 buffer.Append(ch);
+                receivedAnyData = true;
             }
         }
 
-        return string.Join("\n", responses);
+        var result = string.Join("\n", responses);
+        _logger.LogTrace("Response for {Command}: {Length} chars, {Lines} lines",
+            command, result.Length, responses.Count);
+        return result;
     }
 
     private async Task<string?> QueryPidAsync(string pid, CancellationToken ct)

@@ -6,3 +6,4 @@ obj/
 *.log
 *.orig
 .claude/
+snapshots/

@@ -43,7 +43,11 @@ public class DidScanner
         _logger = logger;
     }
 
-    public async Task ScanAsync(string header, int startDid, int endDid, string outputFile, CancellationToken ct)
+    public Task ScanAsync(string header, int startDid, int endDid, string outputFile, CancellationToken ct)
+        => ScanAsync(header, startDid, endDid, outputFile, null, ct);
+
+    public async Task ScanAsync(string header, int startDid, int endDid, string outputFile,
+        Action<string, string, string, int>? onPositiveResponse, CancellationToken ct)
     {
         Console.WriteLine($"Scanning ECU {header}: DIDs {startDid:X4}-{endDid:X4} ({endDid - startDid + 1} DIDs)...");
         Console.WriteLine();
@@ -143,6 +147,7 @@ public class DidScanner
                 };
             }
 
+            onPositiveResponse?.Invoke(header, didHex, hexBytes, dataByteCount);
             Console.WriteLine($"  FOUND: {cmd} -> {hexBytes} ({dataByteCount} bytes)");
         }
 
@@ -167,7 +172,7 @@ public class DidScanner
     /// Sends UDS TesterPresent (3E00) to check if the ECU is alive.
     /// Any response (positive 7E or negative 7F) means online. NO DATA means offline.
     /// </summary>
-    private async Task<bool> ProbeEcuAsync(string header, CancellationToken ct)
+    public async Task<bool> ProbeEcuAsync(string header, CancellationToken ct)
     {
         await _obd.SendCommandAsync($"ATSH {header}", ct);
         var response = await _obd.SendCommandAsync("3E00", ct);
@@ -200,6 +205,7 @@ public class DidScanner
         await File.WriteAllTextAsync(path, json);
     }
 
+    // ECUs confirmed responsive on the Bolt via prior DID scanning
     public static readonly (string Header, string Name)[] KnownEcus =
     [
         ("7E0", "ECM (Engine/Powertrain)"),
@@ -208,6 +214,37 @@ public class DidScanner
         ("7E4", "BECM (Battery Energy)"),
         ("7E6", "EBCM (Brake)"),
         ("7E7", "BECM2 (Battery Extended)"),
+    ];
+
+    // Broader set of GM CAN addresses to probe for ECU discovery.
+    // Covers the standard OBD2 diagnostic range (7E0-7E7) plus common GM
+    // body/chassis/comfort module addresses seen across the platform.
+    public static readonly (string Header, string Name)[] ProbeAddresses =
+    [
+        // Standard OBD2 diagnostic range
+        ("7E0", "ECM (Engine/Powertrain)"),
+        ("7E1", "HPCM2 (Hybrid Powertrain)"),
+        ("7E2", "Powertrain (aux)"),
+        ("7E3", "TCM (Transmission)"),
+        ("7E4", "BECM (Battery Energy)"),
+        ("7E5", "Battery/Body (aux)"),
+        ("7E6", "EBCM (Brake)"),
+        ("7E7", "BECM2 (Battery Extended)"),
+        // GM body/chassis/comfort addresses
+        ("720", "Chassis (aux)"),
+        ("740", "IPC (Instrument Cluster)"),
+        ("741", "IPC (alt)"),
+        ("744", "HVAC"),
+        ("750", "SDM (Airbag/Sensing)"),
+        ("760", "RCDLR (Radio/Infotainment)"),
+        ("7A0", "BCM (Body Control)"),
+        ("7A1", "BCM (alt)"),
+        ("7C0", "BCM2 (Body Control 2)"),
+        ("7C4", "TPMS"),
+        ("7C8", "Park Assist"),
+        ("7CC", "Telematics/OnStar"),
+        ("7D0", "Charging Module"),
+        ("7D4", "PEPS (Keyless Entry)"),
     ];
 
     // Common GM DID ranges worth scanning
@@ -231,11 +268,34 @@ public class DidScanner
             var trimmed = line.Trim();
             if (trimmed.Contains("SEARCHING")) continue;
 
-            var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
+            if (trimmed.Contains(' '))
             {
-                if (part.Length == 2 && IsHex(part))
-                    allBytes.Add(part);
+                var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                {
+                    if (part.Length == 2 && IsHex(part))
+                        allBytes.Add(part);
+                }
+            }
+            else
+            {
+                // Compact format (ATS0): "622C280E3D" or with ISO-TP
+                // sequence prefix: "0:622C280E3D", "A:0E3F0E3D"
+                var hex = trimmed;
+                var colonIdx = hex.IndexOf(':');
+                if (colonIdx >= 0 && colonIdx <= 2)
+                    hex = hex[(colonIdx + 1)..];
+                else if (hex.Length <= 3 && IsHex(hex))
+                    continue; // ISO-TP First Frame PCI
+
+                for (int i = 0; i + 1 < hex.Length; i += 2)
+                {
+                    var pair = hex.Substring(i, 2);
+                    if (IsHex(pair))
+                        allBytes.Add(pair);
+                    else
+                        break;
+                }
             }
         }
 

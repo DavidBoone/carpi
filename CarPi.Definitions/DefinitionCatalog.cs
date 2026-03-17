@@ -46,6 +46,46 @@ public class DefinitionCatalog
         return pids;
     }
 
+    public List<ResolvedPid> ToResolvedPids()
+    {
+        var resolved = new List<ResolvedPid>();
+
+        foreach (var signal in Signals)
+        {
+            foreach (var binding in signal.Bindings)
+            {
+                var modeAndPid = binding.Query.RawCommand
+                    ?? $"{binding.Query.Service}{binding.Query.Identifier}";
+
+                foreach (var presentation in signal.Presentations)
+                {
+                    var decode = presentation.DecodeOverride ?? binding.Decode;
+                    var equation = decode.LegacyEquation;
+                    if (string.IsNullOrWhiteSpace(equation) && decode.Decoder != null)
+                        equation = DecoderDefinitionLegacyConverter.ToLegacyEquation(decode.Decoder) ?? "";
+
+                    var pid = new BoltPid
+                    {
+                        Name = presentation.Name,
+                        ShortName = presentation.ShortName,
+                        ModeAndPid = modeAndPid,
+                        Equation = equation ?? "",
+                        Decoder = decode.Decoder,
+                        MinValue = presentation.MinValue ?? 0,
+                        MaxValue = presentation.MaxValue ?? 0,
+                        Units = presentation.Units,
+                        Header = binding.Ecu.Header,
+                        Priority = signal.Priority
+                    };
+
+                    resolved.Add(new ResolvedPid(signal.Id, binding.Id, presentation.Id, pid));
+                }
+            }
+        }
+
+        return resolved;
+    }
+
     public static DefinitionCatalog LoadFromJson(string filePath)
     {
         var options = CreateJsonOptions();
@@ -227,6 +267,12 @@ public class DefinitionCatalog
     }
 }
 
+public sealed record ResolvedPid(
+    string SignalId,
+    string BindingId,
+    string PresentationId,
+    BoltPid Pid);
+
 internal sealed record NormalizedSignal(
     BoltPid PrimaryPid,
     string CanonicalName,
@@ -235,26 +281,3 @@ internal sealed record NormalizedSignal(
     List<BoltPid> BindingPids,
     List<BoltPid> Presentations);
 
-public static class BoltDefinitionLoader
-{
-    public static List<BoltPid> Load(string filePath)
-    {
-        var extension = Path.GetExtension(filePath);
-        if (extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
-            return DefinitionCatalog.LoadFromJson(filePath).ToBoltPids();
-
-        return BoltPidLoader.LoadFromCsv(filePath);
-    }
-}
-
-public static class SignalDefinitionLoader
-{
-    public static IReadOnlyList<SignalDefinition> Load(string filePath)
-    {
-        var extension = Path.GetExtension(filePath);
-        if (extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
-            return DefinitionCatalog.LoadFromJson(filePath).Signals;
-
-        return DefinitionCatalog.FromBoltPids(BoltPidLoader.LoadFromCsv(filePath)).Signals;
-    }
-}

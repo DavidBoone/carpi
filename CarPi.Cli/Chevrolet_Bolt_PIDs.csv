@@ -22,7 +22,7 @@ Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header
 *Battery - Pack - State of Charge Raw LD 3,SoC Raw 3,22432F,A/2.55,0,100,%,7E4
 !Battery - Pack - State of Charge Variation,SoC Var,22435F,A/2.55,0,100,%,7E4
 !Battery - Pack - Current HD,Batt Amps HD,2240D4,((Signed(A)*256)+B)/20,-400,250,A,7E7
-*Battery - Number of Charges,# Charges,2243A5,((A<8)+B),0,1000,,7E4
+*Battery - Number of Charges,# Charges,2243A5,((A<8)+B),0,1000,count,7E4
 *Battery - Thermal Conditioning Inactive Time,Batt TC Inactive,2224AC,((A*256)+B)*2,0,999999,sec,7E4
 *Battery - 5V Reference Voltage 1,+5V REF 1,2240D3,5+((SIGNED(A)*256+B)*5/65535),0,6,V,7E7
 ?Battery - Status Bitmap,BECM Status,224371,((A<8)+B),0,65535,?,7E4

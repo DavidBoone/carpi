@@ -36,27 +36,27 @@ public class BleObdTransport : IObdTransport
 
     public async Task OpenAsync(CancellationToken ct)
     {
-        _logger.LogInformation("Getting Bluetooth adapter...");
+        _logger.LogDebug("Getting Bluetooth adapter...");
         var adapters = await BlueZManager.GetAdaptersAsync();
         if (adapters.Count == 0)
             throw new InvalidOperationException("No Bluetooth adapters found.");
 
         var adapter = adapters[0];
 
-        _logger.LogInformation("Looking for device {Address}...", _deviceAddress);
+        _logger.LogDebug("Looking for device {Address}...", _deviceAddress);
         _device = await adapter.GetDeviceAsync(_deviceAddress);
 
         if (_device == null)
         {
-            _logger.LogInformation("Device not found in paired list, scanning...");
+            _logger.LogDebug("Device not found in paired list, scanning...");
             _device = await ScanForDeviceAsync(adapter, ct);
         }
 
-        _logger.LogInformation("Connecting to {Address}...", _deviceAddress);
+        _logger.LogDebug("Connecting to {Address}...", _deviceAddress);
         await _device.ConnectAsync();
         await _device.WaitForPropertyValueAsync("Connected", value: true, TimeSpan.FromSeconds(15));
 
-        _logger.LogInformation("Waiting for GATT services...");
+        _logger.LogDebug("Waiting for GATT services...");
         await _device.WaitForPropertyValueAsync("ServicesResolved", value: true, TimeSpan.FromSeconds(15));
 
         var service = await _device.GetServiceAsync(ServiceUuid)
@@ -66,7 +66,7 @@ public class BleObdTransport : IObdTransport
                        "This device may not be an ELM327 BLE adapter.");
 
         var serviceUuid = await service.GetUUIDAsync();
-        _logger.LogInformation("Found GATT service: {UUID}", serviceUuid);
+        _logger.LogDebug("Found GATT service: {UUID}", serviceUuid);
 
         // Determine characteristic UUIDs based on which service was found
         bool isAltService = serviceUuid.StartsWith("0000ffe0");
@@ -84,7 +84,7 @@ public class BleObdTransport : IObdTransport
         else
         {
             _writeChar = _notifyChar;
-            _logger.LogInformation("Using single characteristic for both read and write.");
+            _logger.LogDebug("Using single characteristic for both read and write.");
         }
 
         _notifyChar.Value += OnNotification;
