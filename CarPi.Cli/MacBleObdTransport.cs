@@ -9,11 +9,6 @@ using Plugin.BLE.Abstractions.EventArgs;
 
 public class MacBleObdTransport : IObdTransport
 {
-    private const string ServiceUuid = BleConstants.ServiceUuid;
-    private const string AltServiceUuid = BleConstants.AltServiceUuid;
-    private const string NotifyCharUuid = BleConstants.NotifyCharUuid;
-    private const string WriteCharUuid = BleConstants.WriteCharUuid;
-    private const string AltCharUuid = BleConstants.AltCharUuid;
 
     private readonly string _deviceAddress;
     private readonly ILogger _logger;
@@ -49,15 +44,15 @@ public class MacBleObdTransport : IObdTransport
         _logger.LogDebug("Discovering GATT services...");
         var services = await _device.GetServicesAsync();
 
-        var service = services.FirstOrDefault(s => s.Id == Guid.Parse(ServiceUuid))
-                   ?? services.FirstOrDefault(s => s.Id == Guid.Parse(AltServiceUuid))
+        var service = services.FirstOrDefault(s => s.Id == Guid.Parse(BleConstants.ServiceUuid))
+                   ?? services.FirstOrDefault(s => s.Id == Guid.Parse(BleConstants.AltServiceUuid))
                    ?? throw new InvalidOperationException(
-                       $"ELM327 GATT service not found (tried {ServiceUuid} and {AltServiceUuid}). " +
+                       $"ELM327 GATT service not found (tried {BleConstants.ServiceUuid} and {BleConstants.AltServiceUuid}). " +
                        "This device may not be an ELM327 BLE adapter.");
 
-        bool isAltService = service.Id == Guid.Parse(AltServiceUuid);
-        string notifyUuid = isAltService ? AltCharUuid : NotifyCharUuid;
-        string writeUuid = isAltService ? AltCharUuid : WriteCharUuid;
+        bool isAltService = service.Id == Guid.Parse(BleConstants.AltServiceUuid);
+        string notifyUuid = isAltService ? BleConstants.AltCharUuid : BleConstants.NotifyCharUuid;
+        string writeUuid = isAltService ? BleConstants.AltCharUuid : BleConstants.WriteCharUuid;
 
         _logger.LogDebug("Found GATT service: {UUID}", service.Id);
 

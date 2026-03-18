@@ -7,11 +7,6 @@ using Microsoft.Extensions.Logging;
 
 public class BleObdTransport : IObdTransport
 {
-    private const string ServiceUuid = BleConstants.ServiceUuid;
-    private const string AltServiceUuid = BleConstants.AltServiceUuid;
-    private const string NotifyCharUuid = BleConstants.NotifyCharUuid;
-    private const string WriteCharUuid = BleConstants.WriteCharUuid;
-    private const string AltCharUuid = BleConstants.AltCharUuid;
 
     private static readonly Dictionary<string, object> EmptyOptions = new();
 
@@ -60,10 +55,10 @@ public class BleObdTransport : IObdTransport
         _logger.LogDebug("Waiting for GATT services...");
         await _device.WaitForPropertyValueAsync("ServicesResolved", value: true, TimeSpan.FromSeconds(15));
 
-        var service = await _device.GetServiceAsync(ServiceUuid)
-                   ?? await _device.GetServiceAsync(AltServiceUuid)
+        var service = await _device.GetServiceAsync(BleConstants.ServiceUuid)
+                   ?? await _device.GetServiceAsync(BleConstants.AltServiceUuid)
                    ?? throw new InvalidOperationException(
-                       $"ELM327 GATT service not found (tried {ServiceUuid} and {AltServiceUuid}). " +
+                       $"ELM327 GATT service not found (tried {BleConstants.ServiceUuid} and {BleConstants.AltServiceUuid}). " +
                        "This device may not be an ELM327 BLE adapter.");
 
         var serviceUuid = await service.GetUUIDAsync();
@@ -71,8 +66,8 @@ public class BleObdTransport : IObdTransport
 
         // Determine characteristic UUIDs based on which service was found
         bool isAltService = serviceUuid.StartsWith("0000ffe0");
-        string notifyUuid = isAltService ? AltCharUuid : NotifyCharUuid;
-        string writeUuid = isAltService ? AltCharUuid : WriteCharUuid;
+        string notifyUuid = isAltService ? BleConstants.AltCharUuid : BleConstants.NotifyCharUuid;
+        string writeUuid = isAltService ? BleConstants.AltCharUuid : BleConstants.WriteCharUuid;
 
         _notifyChar = await service.GetCharacteristicAsync(notifyUuid)
             ?? throw new InvalidOperationException($"Notify characteristic {notifyUuid} not found.");
