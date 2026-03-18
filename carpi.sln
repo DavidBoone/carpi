@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CarPi", "CarPi.Cli\CarPi.cs
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CarPi.Definitions", "CarPi.Definitions\CarPi.Definitions.csproj", "{7CD57C96-B8A9-456A-A93B-B734CB746594}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CarPi.Obd", "CarPi.Obd\CarPi.Obd.csproj", "{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{7CD57C96-B8A9-456A-A93B-B734CB746594}.Release|x64.Build.0 = Release|Any CPU
 		{7CD57C96-B8A9-456A-A93B-B734CB746594}.Release|x86.ActiveCfg = Release|Any CPU
 		{7CD57C96-B8A9-456A-A93B-B734CB746594}.Release|x86.Build.0 = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|x64.Build.0 = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Debug|x86.Build.0 = Debug|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|x64.ActiveCfg = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|x64.Build.0 = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|x86.ActiveCfg = Release|Any CPU
+		{1D3CA8E8-EF70-48C1-B2FE-D32E3E117F89}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,7 +1,7 @@
 /// <summary>
 /// Shared BLE constants used by both Linux and macOS transport implementations.
 /// </summary>
-internal static class BleConstants
+public static class BleConstants
 {
     public const string ServiceUuid = "0000fff0-0000-1000-8000-00805f9b34fb";
     public const string AltServiceUuid = "0000ffe0-0000-1000-8000-00805f9b34fb";

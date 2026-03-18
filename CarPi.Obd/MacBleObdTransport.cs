@@ -202,28 +202,19 @@ public class MacBleObdTransport : IObdTransport
     }
 
     /// <summary>
-    /// Scans for BLE devices and prints them to the console. Used by --scan-ble on macOS.
+    /// Scans for BLE devices and returns a list of discovered devices.
     /// </summary>
-    public static async Task ScanAndListDevicesAsync(ILogger logger)
+    public static async Task<IReadOnlyList<(Guid Id, string Name, bool IsLikelyObd)>> ScanForDevicesAsync(
+        TimeSpan duration, CancellationToken ct = default)
     {
         var ble = CrossBluetoothLE.Current;
         var adapter = ble.Adapter;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        try
-        {
-            await WaitForBluetoothReadyAsync(ble, cts.Token);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            return;
-        }
+        using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        readyCts.CancelAfter(TimeSpan.FromSeconds(5));
+        await WaitForBluetoothReadyAsync(ble, readyCts.Token);
 
-        Console.WriteLine("Scanning for BLE devices (10 seconds)...");
-        Console.WriteLine();
-
-        var found = new List<(Guid Id, string Name)>();
+        var found = new List<(Guid Id, string Name, bool IsLikelyObd)>();
 
         adapter.DeviceDiscovered += (sender, args) =>
         {
@@ -231,24 +222,14 @@ public class MacBleObdTransport : IObdTransport
             var name = string.IsNullOrEmpty(device.Name) ? "(unknown)" : device.Name;
 
             if (!found.Any(f => f.Id == device.Id))
-            {
-                found.Add((device.Id, name));
-                var marker = BleConstants.IsLikelyObd(name) ? " <-- possible OBD2 adapter" : "";
-                Console.WriteLine($"  {device.Id}  {name}{marker}");
-            }
+                found.Add((device.Id, name, BleConstants.IsLikelyObd(name)));
         };
 
-        adapter.ScanTimeout = 10000;
-        await adapter.StartScanningForDevicesAsync();
+        adapter.ScanTimeout = (int)duration.TotalMilliseconds;
+        await adapter.StartScanningForDevicesAsync(cancellationToken: ct);
+        await adapter.StopScanningForDevicesAsync();
 
-        if (found.Count == 0)
-        {
-            Console.WriteLine("  (no devices found)");
-        }
-
-        Console.WriteLine();
-        Console.WriteLine("Use --ble <UUID> to connect to a device.");
-        Console.WriteLine("(macOS uses CoreBluetooth UUIDs instead of MAC addresses)");
+        return found;
     }
 
     /// <summary>

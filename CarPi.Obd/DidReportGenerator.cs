@@ -33,18 +33,12 @@ public class DidReportGenerator
     public async Task GenerateAsync(string jsonPath, string outputPath)
     {
         if (!File.Exists(jsonPath))
-        {
-            Console.Error.WriteLine($"Scan results file not found: {jsonPath}");
-            return;
-        }
+            throw new FileNotFoundException($"Scan results file not found: {jsonPath}", jsonPath);
 
         var json = await File.ReadAllTextAsync(jsonPath);
         var scanResult = JsonSerializer.Deserialize(json, DidScanResultContext.Default.DidScanResult);
         if (scanResult == null || scanResult.Count == 0)
-        {
-            Console.Error.WriteLine("No scan data found.");
-            return;
-        }
+            throw new InvalidOperationException("No scan data found in " + jsonPath);
 
         var html = new StringBuilder();
         html.AppendLine("<!DOCTYPE html>");
@@ -141,7 +135,6 @@ public class DidReportGenerator
         html.AppendLine("</body></html>");
 
         await File.WriteAllTextAsync(outputPath, html.ToString());
-        Console.WriteLine($"Report written to {outputPath}");
     }
 
     private static List<string> GuessContent(string[] bytes, int byteCount)

@@ -49,24 +49,24 @@ public class DidScanner
     public async Task ScanAsync(string header, int startDid, int endDid, string outputFile,
         Action<string, string, string, int>? onPositiveResponse, CancellationToken ct)
     {
-        Console.WriteLine($"Scanning ECU {header}: DIDs {startDid:X4}-{endDid:X4} ({endDid - startDid + 1} DIDs)...");
-        Console.WriteLine();
+        _logger.LogInformation("Scanning ECU {Header}: DIDs {Start:X4}-{End:X4} ({Count} DIDs)",
+            header, startDid, endDid, endDid - startDid + 1);
 
         // Set ECU header
         var headerResp = await _obd.SendCommandAsync($"ATSH {header}", ct);
         if (!headerResp.Contains("OK"))
         {
-            Console.Error.WriteLine($"Failed to set header {header}: {headerResp}");
+            _logger.LogError("Failed to set header {Header}: {Response}", header, headerResp);
             return;
         }
 
         // Verify ECU is reachable before scanning
         if (!await ProbeEcuAsync(header, ct))
         {
-            Console.Error.WriteLine($"ECU {header} is not reachable (TesterPresent got no response). Is the vehicle on?");
+            _logger.LogError("ECU {Header} is not reachable (TesterPresent got no response). Is the vehicle on?", header);
             return;
         }
-        Console.WriteLine($"ECU {header} is online.");
+        _logger.LogInformation("ECU {Header} is online", header);
 
         // Speed up scanning: reduce ELM327's own response timeout
         // ATST sets timeout in units of 4ms. 0A = 40ms (vs default ~200ms)
@@ -83,6 +83,7 @@ public class DidScanner
         var now = DateTime.UtcNow;
         int foundCount = 0;
         int scanned = 0;
+        int totalDids = endDid - startDid + 1;
 
         for (int did = startDid; did <= endDid; did++)
         {
@@ -117,7 +118,7 @@ public class DidScanner
                     ecuDids[didHex] = new DidEntry { LastResponse = negResponse };
 
                 if (scanned % 64 == 0)
-                    Console.Write($"\r  Scanned {scanned}/{endDid - startDid + 1}, found {foundCount}...");
+                    _logger.LogInformation("Scanned {Scanned}/{Total}, found {Found}...", scanned, totalDids, foundCount);
                 continue;
             }
 
@@ -148,7 +149,7 @@ public class DidScanner
             }
 
             onPositiveResponse?.Invoke(header, didHex, hexBytes, dataByteCount);
-            Console.WriteLine($"  FOUND: {cmd} -> {hexBytes} ({dataByteCount} bytes)");
+            _logger.LogInformation("FOUND: {Command} -> {Data} ({ByteCount} bytes)", cmd, hexBytes, dataByteCount);
         }
 
         // Restore default ELM327 timeout
@@ -156,15 +157,14 @@ public class DidScanner
 
         // Verify ECU is still reachable after scanning
         if (!await ProbeEcuAsync(header, ct))
-            Console.Error.WriteLine($"WARNING: ECU {header} is no longer reachable — vehicle may have turned off during scan. Results may be incomplete.");
+            _logger.LogWarning("ECU {Header} is no longer reachable — vehicle may have turned off during scan. Results may be incomplete.", header);
 
-        Console.WriteLine();
-        Console.WriteLine($"Scan complete: {foundCount} DIDs responded out of {scanned} scanned.");
+        _logger.LogInformation("Scan complete: {Found} DIDs responded out of {Scanned} scanned", foundCount, scanned);
 
         if (!string.IsNullOrEmpty(outputFile))
         {
             await SaveAsync(outputFile, scanResult);
-            Console.WriteLine($"Results saved to {outputFile}");
+            _logger.LogInformation("Results saved to {OutputFile}", outputFile);
         }
     }
 
