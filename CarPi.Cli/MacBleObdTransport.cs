@@ -9,11 +9,11 @@ using Plugin.BLE.Abstractions.EventArgs;
 
 public class MacBleObdTransport : IObdTransport
 {
-    private const string ServiceUuid = "0000fff0-0000-1000-8000-00805f9b34fb";
-    private const string AltServiceUuid = "0000ffe0-0000-1000-8000-00805f9b34fb";
-    private const string NotifyCharUuid = "0000fff1-0000-1000-8000-00805f9b34fb";
-    private const string WriteCharUuid = "0000fff2-0000-1000-8000-00805f9b34fb";
-    private const string AltCharUuid = "0000ffe1-0000-1000-8000-00805f9b34fb";
+    private const string ServiceUuid = BleConstants.ServiceUuid;
+    private const string AltServiceUuid = BleConstants.AltServiceUuid;
+    private const string NotifyCharUuid = BleConstants.NotifyCharUuid;
+    private const string WriteCharUuid = BleConstants.WriteCharUuid;
+    private const string AltCharUuid = BleConstants.AltCharUuid;
 
     private readonly string _deviceAddress;
     private readonly ILogger _logger;
@@ -238,7 +238,7 @@ public class MacBleObdTransport : IObdTransport
             if (!found.Any(f => f.Id == device.Id))
             {
                 found.Add((device.Id, name));
-                var marker = IsLikelyObd(name) ? " <-- possible OBD2 adapter" : "";
+                var marker = BleConstants.IsLikelyObd(name) ? " <-- possible OBD2 adapter" : "";
                 Console.WriteLine($"  {device.Id}  {name}{marker}");
             }
         };
@@ -293,11 +293,5 @@ public class MacBleObdTransport : IObdTransport
         }
     }
 
-    private static bool IsLikelyObd(string name)
-    {
-        var lower = name.ToLowerInvariant();
-        return lower.Contains("obd") || lower.Contains("elm") || lower.Contains("v-link")
-            || lower.Contains("veepeak") || lower.Contains("vgate") || lower.Contains("konnwei");
-    }
 }
 #endif

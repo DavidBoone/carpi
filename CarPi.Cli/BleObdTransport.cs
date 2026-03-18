@@ -7,11 +7,11 @@ using Microsoft.Extensions.Logging;
 
 public class BleObdTransport : IObdTransport
 {
-    private const string ServiceUuid = "0000fff0-0000-1000-8000-00805f9b34fb";
-    private const string AltServiceUuid = "0000ffe0-0000-1000-8000-00805f9b34fb";
-    private const string NotifyCharUuid = "0000fff1-0000-1000-8000-00805f9b34fb";
-    private const string WriteCharUuid = "0000fff2-0000-1000-8000-00805f9b34fb";
-    private const string AltCharUuid = "0000ffe1-0000-1000-8000-00805f9b34fb";
+    private const string ServiceUuid = BleConstants.ServiceUuid;
+    private const string AltServiceUuid = BleConstants.AltServiceUuid;
+    private const string NotifyCharUuid = BleConstants.NotifyCharUuid;
+    private const string WriteCharUuid = BleConstants.WriteCharUuid;
+    private const string AltCharUuid = BleConstants.AltCharUuid;
 
     private static readonly Dictionary<string, object> EmptyOptions = new();
 
