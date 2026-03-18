@@ -2,14 +2,26 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('OSX'))">net10.0;net10.0-maccatalyst</TargetFrameworks>
+    <TargetFrameworks Condition="!$([MSBuild]::IsOSPlatform('OSX'))">net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <InvariantGlobalization Condition="!$([MSBuild]::IsOSPlatform('OSX'))">true</InvariantGlobalization>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::IsOSPlatform('OSX'))">15.0</SupportedOSPlatformVersion>
+    <ValidateXcodeVersion Condition="$([MSBuild]::IsOSPlatform('OSX'))">false</ValidateXcodeVersion>
+    <ApplicationId Condition="$([MSBuild]::IsOSPlatform('OSX'))">com.carpi.cli</ApplicationId>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <PackageReference Include="Linux.Bluetooth" Version="5.67.1" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$(TargetFramework.Contains('maccatalyst'))">
+    <PackageReference Include="Plugin.BLE" Version="3.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.1" />
@@ -20,13 +32,18 @@
     <PackageReference Include="System.IO.Ports" Version="10.0.1" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="!$(TargetFramework.Contains('maccatalyst'))">
     <None Update="Chevrolet_Bolt_PIDs.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="Chevrolet_Bolt_PIDs.csv">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="$(TargetFramework.Contains('maccatalyst'))">
+    <BundleResource Include="Chevrolet_Bolt_PIDs.json" />
+    <BundleResource Include="Chevrolet_Bolt_PIDs.csv" />
   </ItemGroup>
 
   <ItemGroup>

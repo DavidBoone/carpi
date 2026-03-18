@@ -190,7 +190,7 @@ public class DidScanner
         try
         {
             var json = await File.ReadAllTextAsync(path);
-            return JsonSerializer.Deserialize<DidScanResult>(json) ?? new DidScanResult();
+            return JsonSerializer.Deserialize(json, DidScanResultContext.Default.DidScanResult) ?? new DidScanResult();
         }
         catch
         {
@@ -200,8 +200,7 @@ public class DidScanner
 
     private static async Task SaveAsync(string path, DidScanResult result)
     {
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var json = JsonSerializer.Serialize(result, options);
+        var json = JsonSerializer.Serialize(result, DidScanResultContext.Default.DidScanResult);
         await File.WriteAllTextAsync(path, json);
     }
 

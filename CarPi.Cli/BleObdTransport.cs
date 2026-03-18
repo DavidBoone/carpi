@@ -1,3 +1,4 @@
+#if !MACCATALYST
 using System.Text;
 using System.Threading.Channels;
 using Linux.Bluetooth;
@@ -212,3 +213,4 @@ public class BleObdTransport : IObdTransport
             CloseAsync().GetAwaiter().GetResult();
     }
 }
+#endif

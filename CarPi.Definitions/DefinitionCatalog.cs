@@ -88,17 +88,14 @@ public class DefinitionCatalog
 
     public static DefinitionCatalog LoadFromJson(string filePath)
     {
-        var options = CreateJsonOptions();
         var json = File.ReadAllText(filePath);
-        var catalog = JsonSerializer.Deserialize<DefinitionCatalog>(json, options);
+        var catalog = JsonSerializer.Deserialize(json, DefinitionCatalogContext.Default.DefinitionCatalog);
         return catalog ?? new DefinitionCatalog();
     }
 
     public void SaveToJson(string filePath)
     {
-        var options = CreateJsonOptions();
-        options.WriteIndented = true;
-        var json = JsonSerializer.Serialize(this, options);
+        var json = JsonSerializer.Serialize(this, DefinitionCatalogContext.Default.DefinitionCatalog);
         File.WriteAllText(filePath, json + Environment.NewLine);
     }
 
@@ -254,17 +251,6 @@ public class DefinitionCatalog
             .Trim('_');
     }
 
-    private static JsonSerializerOptions CreateJsonOptions()
-    {
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            ReadCommentHandling = JsonCommentHandling.Skip
-        };
-        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
-        return options;
-    }
 }
 
 public sealed record ResolvedPid(

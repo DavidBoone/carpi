@@ -1,9 +1,57 @@
 using System.IO.Ports;
 using System.Text;
+#if !MACCATALYST
 using Linux.Bluetooth;
 using Linux.Bluetooth.Extensions;
+#endif
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+
+#if MACCATALYST
+// CoreBluetooth requires a CFRunLoop on the main thread to dispatch callbacks.
+// A console app doesn't have one, so we run Program logic on a background thread
+// and pump the run loop on main until it finishes.
+return await MacRunLoopHelper.RunWithRunLoopAsync(args);
+
+public static class MacRunLoopHelper
+{
+    public static Task<int> RunWithRunLoopAsync(string[] args)
+    {
+        var tcs = new TaskCompletionSource<int>();
+
+        // Run the real program on a background thread
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var result = ProgramMain.RunAsync(args).GetAwaiter().GetResult();
+                tcs.SetResult(result);
+            }
+            catch (Exception ex)
+            {
+                tcs.SetException(ex);
+            }
+            finally
+            {
+                // Stop the run loop so the main thread exits
+                CoreFoundation.CFRunLoop.Main.Stop();
+            }
+        })
+        { IsBackground = true };
+        thread.Start();
+
+        // Pump the main run loop — CoreBluetooth callbacks need this
+        CoreFoundation.CFRunLoop.Main.Run();
+
+        return tcs.Task;
+    }
+}
+
+public static class ProgramMain
+{
+    public static async Task<int> RunAsync(string[] args)
+    {
+#endif
 
 var configBuilder = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -63,17 +111,17 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("Usage:");
     Console.WriteLine("  CarPi --list-ports              List available serial ports");
     Console.WriteLine("  CarPi --scan-bluetooth          Scan for paired Bluetooth OBD2 adapters");
-    Console.WriteLine("  CarPi --scan-ble                Scan for BLE OBD2 adapters (Linux only)");
+    Console.WriteLine("  CarPi --scan-ble                Scan for BLE OBD2 adapters");
     Console.WriteLine("  CarPi --port <port>             Connect via serial port");
     Console.WriteLine("  CarPi --ble <mac>               Connect via BLE to device MAC address");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --port <port>       Serial port (e.g., /dev/ttyUSB0, COM3, /dev/rfcomm0)");
     Console.WriteLine("  --baud <rate>       Baud rate (default: 38400)");
-    Console.WriteLine("  --ble <mac>         BLE device MAC address (Linux only)");
+    Console.WriteLine("  --ble <mac>         BLE device MAC address (or CoreBluetooth UUID on macOS)");
     Console.WriteLine("  --list-ports        List available serial ports");
     Console.WriteLine("  --scan-bluetooth    Scan for paired Bluetooth OBD2 devices");
-    Console.WriteLine("  --scan-ble          Scan for BLE OBD2 devices (Linux only)");
+    Console.WriteLine("  --scan-ble          Scan for BLE OBD2 devices");
     Console.WriteLine("  --bluetooth-mac <x> Bluetooth MAC for RFCOMM auto-binding on Linux");
     Console.WriteLine("  --csv <path>        PID definitions file (.csv or .json)");
     Console.WriteLine("  --defs <path>       Alias for --csv");
@@ -118,6 +166,10 @@ if (args.Contains("--list-ports"))
 
 if (args.Contains("--scan-ble"))
 {
+#if MACCATALYST
+    await MacBleObdTransport.ScanAndListDevicesAsync(logger);
+    return 0;
+#else
     if (!OperatingSystem.IsLinux())
     {
         Console.Error.WriteLine("BLE scanning requires Linux with BlueZ.");
@@ -164,6 +216,7 @@ if (args.Contains("--scan-ble"))
     Console.WriteLine();
     Console.WriteLine("Use --ble <MAC> to connect to a device.");
     return 0;
+#endif
 }
 
 if (args.Contains("--import-csv"))
@@ -378,7 +431,11 @@ try
     if (useBle)
     {
         logger.LogInformation("Connecting to BLE device {Mac}", appConfig.BleMac);
+#if MACCATALYST
+        transport = new MacBleObdTransport(appConfig.BleMac, logger);
+#else
         transport = new BleObdTransport(appConfig.BleMac, logger);
+#endif
     }
     else
     {
@@ -705,15 +762,31 @@ string ResolveDefinitionPath(string? configuredPath)
         var configuredFromBase = Path.Combine(AppContext.BaseDirectory, configuredPath);
         if (File.Exists(configuredFromBase))
             return configuredFromBase;
+
+#if MACCATALYST
+        var configuredFromResources = Path.Combine(AppContext.BaseDirectory, "..", "Resources", configuredPath);
+        if (File.Exists(configuredFromResources))
+            return configuredFromResources;
+#endif
     }
 
-    var candidates = new[]
-    {
-        "Chevrolet_Bolt_PIDs.json",
-        Path.Combine(AppContext.BaseDirectory, "Chevrolet_Bolt_PIDs.json"),
-        "Chevrolet_Bolt_PIDs.csv",
-        Path.Combine(AppContext.BaseDirectory, "Chevrolet_Bolt_PIDs.csv")
-    };
+    var searchDirs = new List<string> { "", AppContext.BaseDirectory };
+
+#if MACCATALYST
+    // BundleResource items land in Contents/Resources/ while AppContext.BaseDirectory
+    // points to Contents/MonoBundle/. Add the Resources sibling so defs are found.
+    var resourceDir = Path.Combine(AppContext.BaseDirectory, "..", "Resources");
+    if (Directory.Exists(resourceDir))
+        searchDirs.Add(resourceDir);
+#endif
+
+    var candidates = searchDirs
+        .SelectMany(dir => new[]
+        {
+            Path.Combine(dir, "Chevrolet_Bolt_PIDs.json"),
+            Path.Combine(dir, "Chevrolet_Bolt_PIDs.csv")
+        })
+        .ToArray();
 
     foreach (var candidate in candidates)
     {
@@ -726,12 +799,14 @@ string ResolveDefinitionPath(string? configuredPath)
         : "Chevrolet_Bolt_PIDs.csv";
 }
 
+#if !MACCATALYST
 bool IsLikelyObd(string name)
 {
     var lower = name.ToLowerInvariant();
     return lower.Contains("obd") || lower.Contains("elm") || lower.Contains("v-link")
         || lower.Contains("veepeak") || lower.Contains("vgate") || lower.Contains("konnwei");
 }
+#endif
 
 async Task<bool> RunRfcommBindAsync(string mac, string device)
 {
@@ -778,6 +853,11 @@ async Task RunRfcommReleaseAsync(string device)
     }
     catch { }
 }
+
+#if MACCATALYST
+    } // end RunAsync
+} // end ProgramMain
+#endif
 
 public class AppConfig
 {

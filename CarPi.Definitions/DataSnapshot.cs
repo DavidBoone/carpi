@@ -14,20 +14,18 @@ public sealed class DataSnapshot
 
     public void Save(string filePath)
     {
-        var options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        };
-        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
-
-        var json = JsonSerializer.Serialize(this, options);
+        var json = JsonSerializer.Serialize(this, DataSnapshotContext.Default.DataSnapshot);
         File.WriteAllText(filePath, json + Environment.NewLine);
     }
 
     public static string GenerateFileName(DateTimeOffset timestamp)
-        => $"snapshot_{timestamp:yyyyMMdd_HHmmss}.json";
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".carpi", "snapshots");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, $"snapshot_{timestamp:yyyyMMdd_HHmmss}.json");
+    }
 }
 
 public sealed class EcuStatus

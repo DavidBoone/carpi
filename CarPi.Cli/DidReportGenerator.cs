@@ -39,7 +39,7 @@ public class DidReportGenerator
         }
 
         var json = await File.ReadAllTextAsync(jsonPath);
-        var scanResult = JsonSerializer.Deserialize<DidScanResult>(json);
+        var scanResult = JsonSerializer.Deserialize(json, DidScanResultContext.Default.DidScanResult);
         if (scanResult == null || scanResult.Count == 0)
         {
             Console.Error.WriteLine("No scan data found.");
