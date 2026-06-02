@@ -1,5 +1,7 @@
 # .NET Raspberry Pi Zero Project Template
 
+> **Origin / purpose:** These notes come from a separate .NET-on-Raspberry-Pi project, not from CarPi itself. They are kept here only as a **generic reference** for cross-compiling and deploying AOT .NET apps to a Pi Zero (ARM64). Treat `AppName` and the config examples as placeholders — they do not describe CarPi's actual configuration.
+
 ## Overview
 This document captures the setup and patterns used for .NET projects targeting Raspberry Pi (ARM64).
 
@@ -19,15 +21,14 @@ This document captures the setup and patterns used for .NET projects targeting R
 </PropertyGroup>
 ```
 
-### Dependencies Used
-- **Npgsql** (10.0.1) - PostgreSQL driver
+### Common Dependencies
+Pick what the app needs; these are the generic building blocks used across Pi projects:
 - **Microsoft.Extensions.Configuration** (10.0.1) - Configuration base
 - **Microsoft.Extensions.Configuration.Json** (10.0.1) - JSON config
 - **Microsoft.Extensions.Configuration.EnvironmentVariables** (10.0.1) - Environment variables
 - **Microsoft.Extensions.Configuration.CommandLine** (10.0.1) - CLI args
 - **Microsoft.Extensions.Logging** (10.0.1) - Logging
 - **Microsoft.Extensions.Logging.Console** (10.0.1) - Console logging
-- **Polly** (8.6.5) - Resilience/retry policies
 
 ## Cross-Compilation with Docker
 
@@ -74,7 +75,7 @@ ENTRYPOINT ["dotnet", "AppName.dll"]
 #!/bin/bash
 set -e
 docker build --target export --output ./build-output .
-echo To Deploy: rsync -P build-output/AppName pi0.h.b:AppName
+echo To Deploy: rsync -P build-output/AppName <pi-host>:AppName
 ```
 
 ## Configuration Pattern
@@ -82,20 +83,8 @@ echo To Deploy: rsync -P build-output/AppName pi0.h.b:AppName
 ### appsettings.json
 ```json
 {
-  "ConnectionString": "",
-  "GpsdHost": "localhost",
-  "GpsdPort": 2947,
-  "TcpReceiveTimeout": 15000,
-  "TcpSendTimeout": 5000,
-  "GpsdHandshakeTimeout": 5000,
-  "GpsdReadTimeout": 15000,
-  "InitialReconnectDelay": 1000,
-  "MaxReconnectDelay": 60000,
-  "DatabaseMaxRetries": 3,
-  "DatabaseInitialRetryDelay": 100,
-  "StatsReportingInterval": 60000,
-  "ProgressReportInterval": 10,
-  "ValidateMessages": true,
+  "ExampleSetting": "value",
+  "ExampleTimeout": 15000,
   "Logging": {
     "LogLevel": {
       "Default": "Information",
@@ -115,12 +104,10 @@ echo To Deploy: rsync -P build-output/AppName pi0.h.b:AppName
 var configBuilder = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-    .AddEnvironmentVariables(prefix: "GPSLOGGER_")
+    .AddEnvironmentVariables(prefix: "APPNAME_")
     .AddCommandLine(args, new Dictionary<string, string>
     {
-        { "--connection-string", "ConnectionString" },
-        { "--gpsd-host", "GpsdHost" },
-        { "--gpsd-port", "GpsdPort" },
+        { "--example-setting", "ExampleSetting" },
         { "--log-level", "Logging:LogLevel:Default" }
     });
 ```
@@ -129,20 +116,8 @@ var configBuilder = new ConfigurationBuilder()
 ```csharp
 public class AppConfig
 {
-    public string ConnectionString { get; set; } = string.Empty;
-    public string GpsdHost { get; set; } = "localhost";
-    public int GpsdPort { get; set; } = 2947;
-    public int TcpReceiveTimeout { get; set; } = 15000;
-    public int TcpSendTimeout { get; set; } = 5000;
-    public int GpsdHandshakeTimeout { get; set; } = 5000;
-    public int GpsdReadTimeout { get; set; } = 15000;
-    public int InitialReconnectDelay { get; set; } = 1000;
-    public int MaxReconnectDelay { get; set; } = 60000;
-    public int DatabaseMaxRetries { get; set; } = 3;
-    public int DatabaseInitialRetryDelay { get; set; } = 100;
-    public int StatsReportingInterval { get; set; } = 60000;
-    public int ProgressReportInterval { get; set; } = 10;
-    public bool ValidateMessages { get; set; } = true;
+    public string ExampleSetting { get; set; } = string.Empty;
+    public int ExampleTimeout { get; set; } = 15000;
 }
 ```
 
@@ -184,8 +159,8 @@ await processor.RunAsync(cts.Token);
 ```
 
 ## Deployment
-- Remote: `pi0.h.b:/home/dave/workspace/AppName.git`
-- Deploy command: `rsync -P build-output/AppName pi0.h.b:AppName`
+- Remote: `<pi-host>:/home/<user>/workspace/AppName.git`
+- Deploy command: `rsync -P build-output/AppName <pi-host>:AppName`
 
 ## Invariant Globalization
 Set `<InvariantGlobalization>true</InvariantGlobalization>` in .csproj to avoid loading ICU data (~10MB savings on ARM64).
