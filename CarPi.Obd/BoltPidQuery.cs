@@ -15,11 +15,11 @@ public class BoltPidResult
 
 public class BoltPidQuery
 {
-    private readonly ObdDevice _obd;
+    private readonly IObdSession _obd;
     private readonly ILogger _logger;
     private string _currentHeader = "";
 
-    public BoltPidQuery(ObdDevice obd, ILogger logger)
+    public BoltPidQuery(IObdSession obd, ILogger logger)
     {
         _obd = obd;
         _logger = logger;
