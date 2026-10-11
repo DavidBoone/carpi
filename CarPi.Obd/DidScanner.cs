@@ -34,10 +34,10 @@ public class DidScanResult : SortedDictionary<string, SortedDictionary<string, D
 
 public class DidScanner
 {
-    private readonly ObdDevice _obd;
+    private readonly IObdSession _obd;
     private readonly ILogger _logger;
 
-    public DidScanner(ObdDevice obd, ILogger logger)
+    public DidScanner(IObdSession obd, ILogger logger)
     {
         _obd = obd;
         _logger = logger;

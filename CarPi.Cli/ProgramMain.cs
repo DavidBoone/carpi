@@ -10,13 +10,13 @@ using Microsoft.Extensions.Logging;
 public static class ProgramMain
 {
     // Global options — declared as fields so all commands can access them
-    private static readonly Option<string?> PortOption = new("--port") { Description = "Serial port (e.g., /dev/ttyUSB0, COM3)" };
-    private static readonly Option<int> BaudOption = new("--baud") { Description = "Baud rate", DefaultValueFactory = _ => 38400 };
-    private static readonly Option<string?> BleOption = new("--ble") { Description = "BLE device MAC address (or CoreBluetooth UUID on macOS)" };
-    private static readonly Option<string?> BluetoothMacOption = new("--bluetooth-mac") { Description = "Bluetooth MAC for RFCOMM auto-binding on Linux" };
-    private static readonly Option<string?> DefsOption = new("--defs", "--csv") { Description = "PID definitions file (.csv or .json)" };
-    private static readonly Option<string?> PidFilterOption = new("--pid-filter") { Description = "PID priority filter (* = common, ! = important, + = cell voltages, all = everything)", DefaultValueFactory = _ => "*!" };
-    private static readonly Option<int> VerbosityOption = new("-v") { Description = "Verbosity level (1=Info, 2=Debug, 3=Trace)", Arity = ArgumentArity.ZeroOrOne, DefaultValueFactory = _ => 0 };
+    private static readonly Option<string?> PortOption = new("--port") { Description = "Serial port (e.g., /dev/ttyUSB0, COM3)" , Recursive = true };
+    private static readonly Option<int> BaudOption = new("--baud") { Description = "Baud rate", DefaultValueFactory = _ => 38400 , Recursive = true };
+    private static readonly Option<string?> BleOption = new("--ble") { Description = "BLE device MAC address (or CoreBluetooth UUID on macOS)" , Recursive = true };
+    private static readonly Option<string?> BluetoothMacOption = new("--bluetooth-mac") { Description = "Bluetooth MAC for RFCOMM auto-binding on Linux" , Recursive = true };
+    private static readonly Option<string?> DefsOption = new("--defs", "--csv") { Description = "PID definitions file (.csv or .json)" , Recursive = true };
+    private static readonly Option<string?> PidFilterOption = new("--pid-filter") { Description = "PID priority filter (* = common, ! = important, + = cell voltages, all = everything)", DefaultValueFactory = _ => "*!" , Recursive = true };
+    private static readonly Option<int> VerbosityOption = new("-v") { Description = "Verbosity level (1=Info, 2=Debug, 3=Trace)", Arity = ArgumentArity.ZeroOrOne, DefaultValueFactory = _ => 0 , Recursive = true };
 
     public static async Task<int> RunAsync(string[] args)
     {
@@ -25,7 +25,12 @@ public static class ProgramMain
 
         var root = BuildRootCommand();
         var parseResult = root.Parse(processedArgs);
-        return await parseResult.InvokeAsync();
+        var result = await parseResult.InvokeAsync();
+
+        // Connection failures (car asleep, daemon unreachable) set Environment.ExitCode
+        // from inside an action, where there's no return value to use. Surface it, so a
+        // scheduled pull can tell "no car" from "collected nothing".
+        return result != 0 ? result : Environment.ExitCode;
     }
 
     private static (string[] Args, int Verbosity) PreProcessVerbosity(string[] args)
@@ -87,7 +92,7 @@ public static class ProgramMain
             var logger = lf.CreateLogger<Program>();
 
             await using var obd = await ConnectObdAsync(parseResult, logger, ct);
-            if (obd == null) return;
+            if (obd == null) { Environment.ExitCode = 1; return; }
 
             await RunQuery(obd, parseResult.GetValue(DefsOption), parseResult.GetValue(PidFilterOption) ?? "*!", logger, ct);
             await obd.DisconnectAsync();
@@ -265,7 +270,7 @@ public static class ProgramMain
             var logger = lf.CreateLogger<Program>();
 
             await using var obd = await ConnectObdAsync(parseResult, logger, ct);
-            if (obd == null) return;
+            if (obd == null) { Environment.ExitCode = 1; return; }
 
             var scanner = new DidScanner(obd, logger);
             var now = DateTimeOffset.UtcNow;
@@ -307,7 +312,7 @@ public static class ProgramMain
             var logger = lf.CreateLogger<Program>();
 
             await using var obd = await ConnectObdAsync(parseResult, logger, ct);
-            if (obd == null) return;
+            if (obd == null) { Environment.ExitCode = 1; return; }
 
             var scanOutput = parseResult.GetValue(ScanOutputOption);
             var header = parseResult.GetValue(headerArg);
@@ -346,7 +351,7 @@ public static class ProgramMain
             var logger = lf.CreateLogger<Program>();
 
             await using var obd = await ConnectObdAsync(parseResult, logger, ct);
-            if (obd == null) return;
+            if (obd == null) { Environment.ExitCode = 1; return; }
 
             var scanOutput = parseResult.GetValue(ScanOutputOption);
             var (knownDids, scanDefsSource) = LoadKnownDids(parseResult.GetValue(DefsOption));
@@ -393,7 +398,7 @@ public static class ProgramMain
             var logger = lf.CreateLogger<Program>();
 
             await using var obd = await ConnectObdAsync(parseResult, logger, ct);
-            if (obd == null) return;
+            if (obd == null) { Environment.ExitCode = 1; return; }
 
             await RunQuery(obd, parseResult.GetValue(DefsOption), parseResult.GetValue(PidFilterOption) ?? "*!", logger, ct);
             await obd.DisconnectAsync();
@@ -403,7 +408,7 @@ public static class ProgramMain
 
     // --- Shared logic ---
 
-    private static async Task RunQuery(ObdDevice obd, string? defsOptionValue, string filter, ILogger logger, CancellationToken ct)
+    private static async Task RunQuery(IObdSession obd, string? defsOptionValue, string filter, ILogger logger, CancellationToken ct)
     {
         var defsPath = ResolveDefinitionPath(defsOptionValue);
 
@@ -475,7 +480,7 @@ public static class ProgramMain
         else
         {
             logger.LogDebug("No definitions found, querying standard OBD2 PIDs");
-            var results = await obd.DumpAllPidsAsync();
+            var results = await obd.DumpAllPidsAsync(logger);
             foreach (var (pid, value) in results)
                 Console.WriteLine($"{pid}: {value}");
         }
