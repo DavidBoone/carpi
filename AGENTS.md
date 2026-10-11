@@ -8,10 +8,13 @@ CarPi is a .NET CLI tool for connecting to ELM327 OBD2 adapters via serial, clas
 
 ## Solution Structure
 
-Three projects (`carpi.sln`):
+Four projects in `carpi.sln`, plus `CarPi.Client`, which is not in the solution and is
+built transitively via `CarPi.Cli`'s `ProjectReference`:
 - **CarPi.Cli** (`CarPi.Cli/CarPi.csproj`) — entry point, command-line surface (System.CommandLine).
 - **CarPi.Obd** (`CarPi.Obd/CarPi.Obd.csproj`) — OBD/ELM327 transports (serial, BLE), DID scanner, PID query, equation evaluator.
 - **CarPi.Definitions** (`CarPi.Definitions/CarPi.Definitions.csproj`) — canonical PID/signal definition model, loaders, normalizer, validator.
+- **CarPi.Daemon** (`CarPi.Daemon/CarPi.Daemon.csproj`) — HTTP front end for one adapter, meant to run on the Pi within BLE range of the parked car. Owns the adapter, proxies commands, and nothing else. See `CarPi.Daemon/README.md`.
+- **CarPi.Client** (`CarPi.Client/CarPi.Client.csproj`) — `RemoteObdSession`, an `IObdSession` backed by a daemon over HTTP.
 
 ## Build & Run
 
@@ -36,7 +39,12 @@ dotnet run -- report scan_results.json      # Generate HTML report from scan res
 ```
 Definition-tooling commands (no adapter needed): `import-csv`, `normalize-defs`, `validate`.
 
-Global option `-v`/`-vv`/`-vvv` sets verbosity (Info/Debug/Trace).
+Global option `-v`/`-vv`/`-vvv` sets verbosity (Info/Debug/Trace). `--daemon <url>` sends
+the adapter work to a remote CarPi.Daemon; `--ble`/`--port` then describe what the daemon
+should open. Adapter commands exit `1` when the adapter is unreachable.
+
+Global options must be declared `Recursive = true` or subcommands silently reject them —
+System.CommandLine 2.x does not inherit them by default.
 
 ### Tests
 No test project exists yet. Do not assume `dotnet test` works.
@@ -107,6 +115,17 @@ using Microsoft.Extensions.Logging;
 - BLE is platform-split: **Linux** uses `Linux.Bluetooth` (BlueZ D-Bus); **macOS** uses `Plugin.BLE` via a `net10.0-maccatalyst` target (CoreBluetooth). Package refs are conditioned per-TFM in `CarPi.Obd.csproj`.
 - Handle path separators appropriately (always use `/` in config, code handles OS differences)
 
+### Session vs Transport
+Two boundaries, and the distinction matters:
+- **`IObdSession`** — command granularity (`SendCommandAsync` in, response string out).
+  Implemented by `ObdDevice` locally and `RemoteObdSession` over HTTP. `BoltPidQuery` and
+  `DidScanner` take this, so they run unchanged against a local or a remote adapter.
+- **`IObdTransport`** — character granularity, local links only. **Never proxy this over a
+  network**: one round trip per character makes a single PID response dozens of round trips.
+
+Definitions and decoding stay on the client side; the daemon relays bytes and interprets
+nothing, so the Pi never needs the signal catalog.
+
 ### Transport Architecture
 - `IObdTransport` interface abstracts serial vs BLE communication
 - `SerialObdTransport` wraps `System.IO.Ports.SerialPort`
@@ -128,5 +147,10 @@ using Microsoft.Extensions.Logging;
 ## Known Limitations
 - **OBD protocol is hardcoded** to `ATSP6` (ISO 15765-4 CAN, 500kbps, 11-bit) in `ObdDevice.cs`. Correct for the Chevy Bolt / most modern GM, but not configurable yet — other vehicles may need a different protocol.
 - **Equation evaluator does not support cross-references.** `EquationEvaluator` substitutes `0` for `[XXXXXX]` bracket references (`EquationEvaluator.cs`), so any signal whose formula depends on another PID evaluates silently to a wrong value rather than erroring.
-- **No automated tests.**
+- **No automated tests.** `CarPi.Daemon`'s `"transport": "fake"` is the closest thing —
+  a canned ELM327 that lets the daemon and client be exercised without a car. Note that
+  `System.IO.Ports` cannot open a pty, so socat virtual serial pairs are not a substitute.
+- **Every command costs ~250 ms** beyond the adapter's own latency: `ObdDevice.SendCommandAsync`
+  peeks for 250 ms after the `>` prompt to catch premature prompts from cheap clones. Over
+  hundreds of signals that dominates the total scan time.
 - Seed definitions cover the Chevy Bolt only; the canonical model is not yet exercised against a second vehicle (see `TODO.md`).

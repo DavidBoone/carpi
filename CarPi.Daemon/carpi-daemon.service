@@ -1,0 +1,46 @@
+# User unit — no root needed. Boot-start comes from `loginctl enable-linger claude`,
+# which polkit allows for your own user.
+#
+# No auth on the HTTP surface — keep this on the tailnet/LAN only.
+
+[Unit]
+Description=CarPi OBD2 daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory=%h/carpi-daemon
+ExecStart=%h/carpi-daemon/carpi-daemon
+Environment=Urls=http://0.0.0.0:5252
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+# .NET 8+ double-maps the JIT code heap (W^X) into a memfd, which on this 416 MB
+# Pi costs ~26 MB of RSS — measured 100.9 MB with it on, 74.8 MB with it off, at
+# equal elapsed time. Off restores the pre-.NET-8 RW code pages; BLE scan and a
+# live drive sample were both verified working under it, so Tmds.DBus's
+# Reflection.Emit proxies are unaffected.
+Environment=DOTNET_EnableWriteXorExecute=0
+
+# Without a heap limit the GC sizes itself against the whole 416 MB box, so a burst of
+# allocation (a failed BLE connect costs ~60 MB transient) is simply kept — RSS climbed
+# 75 -> 200 MB over 9 h of the car being asleep, most of it out to swap. The limit makes
+# the GC collect instead of grow; ConserveMemory compacts and hands pages back, and the
+# small gen0 budget keeps the transient spikes from turning into resident heap.
+Environment=DOTNET_GCHeapHardLimit=0x6000000
+Environment=DOTNET_GCConserveMemory=9
+Environment=DOTNET_GCgen0size=400000
+
+# Don't let a half-written state linger across a restart.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h/carpi-daemon
+PrivateTmp=true
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -35,6 +35,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CarPi.Obd\CarPi.Obd.csproj" />
     <ProjectReference Include="..\CarPi.Definitions\CarPi.Definitions.csproj" />
+    <ProjectReference Include="..\CarPi.Client\CarPi.Client.csproj" />
   </ItemGroup>
 
 </Project>

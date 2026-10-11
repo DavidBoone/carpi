@@ -50,7 +50,7 @@ public class DidReportGenerator
         html.AppendLine("</style>");
         html.AppendLine("</head><body>");
         html.AppendLine("<h1>CarPi DID Scan Report</h1>");
-        html.AppendLine($"<p class='generated'>Generated {DateTime.Now:yyyy-MM-dd HH:mm:ss}</p>");
+        html.AppendLine($"<p class='generated'>Generated {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}</p>");
 
         // Summary table
         html.AppendLine("<h2>Summary</h2>");

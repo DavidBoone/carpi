@@ -6,6 +6,7 @@ using Linux.Bluetooth;
 using Linux.Bluetooth.Extensions;
 #endif
 using Microsoft.Extensions.Logging;
+using CarPi.Client;
 
 public static class ProgramMain
 {
@@ -14,6 +15,7 @@ public static class ProgramMain
     private static readonly Option<int> BaudOption = new("--baud") { Description = "Baud rate", DefaultValueFactory = _ => 38400 , Recursive = true };
     private static readonly Option<string?> BleOption = new("--ble") { Description = "BLE device MAC address (or CoreBluetooth UUID on macOS)" , Recursive = true };
     private static readonly Option<string?> BluetoothMacOption = new("--bluetooth-mac") { Description = "Bluetooth MAC for RFCOMM auto-binding on Linux" , Recursive = true };
+    private static readonly Option<string?> DaemonOption = new("--daemon") { Description = "CarPi.Daemon URL (e.g. http://carpi.local:5252) — the adapter is opened there, not locally" , Recursive = true };
     private static readonly Option<string?> DefsOption = new("--defs", "--csv") { Description = "PID definitions file (.csv or .json)" , Recursive = true };
     private static readonly Option<string?> PidFilterOption = new("--pid-filter") { Description = "PID priority filter (* = common, ! = important, + = cell voltages, all = everything)", DefaultValueFactory = _ => "*!" , Recursive = true };
     private static readonly Option<int> VerbosityOption = new("-v") { Description = "Verbosity level (1=Info, 2=Debug, 3=Trace)", Arity = ArgumentArity.ZeroOrOne, DefaultValueFactory = _ => 0 , Recursive = true };
@@ -63,6 +65,7 @@ public static class ProgramMain
         root.Options.Add(BaudOption);
         root.Options.Add(BleOption);
         root.Options.Add(BluetoothMacOption);
+        root.Options.Add(DaemonOption);
         root.Options.Add(DefsOption);
         root.Options.Add(PidFilterOption);
         root.Options.Add(VerbosityOption);
@@ -106,10 +109,32 @@ public static class ProgramMain
     private static Command BuildListPortsCommand()
     {
         var cmd = new Command("list-ports", "List available serial ports");
-        cmd.SetAction(_ =>
+        cmd.SetAction(async (parseResult, ct) =>
         {
-            Console.WriteLine("Available serial ports:");
-            var ports = SerialPort.GetPortNames();
+            var daemon = parseResult.GetValue(DaemonOption);
+
+            string[] ports;
+            if (!string.IsNullOrEmpty(daemon))
+            {
+                if (!TryParseDaemonUri(daemon, out var uri)) { Environment.ExitCode = 1; return; }
+                Console.WriteLine($"Available serial ports on {uri}:");
+                try
+                {
+                    ports = (await RemoteObdSession.GetPortsAsync(uri, ct)).Ports.ToArray();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error: could not reach daemon at {uri} — {ex.Message}");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+            }
+            else
+            {
+                Console.WriteLine("Available serial ports:");
+                ports = SerialPort.GetPortNames();
+            }
+
             if (ports.Length == 0)
                 Console.WriteLine("  (none found)");
             else
@@ -129,11 +154,21 @@ public static class ProgramMain
     private static Command BuildScanBleCommand()
     {
         var cmd = new Command("scan-ble", "Scan for BLE OBD2 adapters");
+        var secondsOption = new Option<int>("--seconds") { Description = "How long to listen (default 10)", DefaultValueFactory = _ => 10 };
+        cmd.Options.Add(secondsOption);
+
         cmd.SetAction(async (parseResult, ct) =>
         {
             using var lf = CreateLoggerFactory(parseResult.GetValue(VerbosityOption));
             var logger = lf.CreateLogger<Program>();
-            await ScanBle(logger);
+
+            var daemon = parseResult.GetValue(DaemonOption);
+            var seconds = parseResult.GetValue(secondsOption);
+
+            if (!string.IsNullOrEmpty(daemon))
+                await ScanBleRemote(daemon, seconds, ct);
+            else
+                await ScanBle(logger, seconds);
         });
         return cmd;
     }
@@ -486,12 +521,13 @@ public static class ProgramMain
         }
     }
 
-    private static async Task<ObdDevice?> ConnectObdAsync(ParseResult parseResult, ILogger logger, CancellationToken ct)
+    private static async Task<IObdSession?> ConnectObdAsync(ParseResult parseResult, ILogger logger, CancellationToken ct)
     {
         var bleMac = parseResult.GetValue(BleOption);
         var port = parseResult.GetValue(PortOption);
         var baud = parseResult.GetValue(BaudOption);
         var btMac = parseResult.GetValue(BluetoothMacOption);
+        var daemon = parseResult.GetValue(DaemonOption);
 
         bool useBle = !string.IsNullOrEmpty(bleMac);
 
@@ -500,6 +536,9 @@ public static class ProgramMain
             Console.Error.WriteLine("Error: No connection specified. Use --port <port> or --ble <mac>.");
             return null;
         }
+
+        if (!string.IsNullOrEmpty(daemon))
+            return await ConnectRemoteAsync(daemon, useBle, bleMac, port, baud, logger, ct);
 
         IObdTransport transport;
 
@@ -537,6 +576,53 @@ public static class ProgramMain
         await obd.ConnectAsync(connectCts.Token);
         logger.LogInformation("Connected");
         return obd;
+    }
+
+    /// <summary>
+    /// Opens the adapter on a remote CarPi.Daemon instead of locally. Everything downstream
+    /// — definitions, decoding, reports — still runs here; only the ELM327 conversation
+    /// happens on the daemon's box.
+    /// </summary>
+    private static async Task<IObdSession?> ConnectRemoteAsync(string daemon, bool useBle, string? bleMac,
+        string? port, int baud, ILogger logger, CancellationToken ct)
+    {
+        if (!Uri.TryCreate(daemon, UriKind.Absolute, out var uri))
+        {
+            Console.Error.WriteLine($"Error: --daemon must be an absolute URL, got '{daemon}'.");
+            return null;
+        }
+
+        var request = useBle
+            ? new ConnectRequest { Transport = "ble", Address = bleMac }
+            : new ConnectRequest { Transport = "serial", Port = port, Baud = baud };
+
+        logger.LogInformation("Connecting via daemon {Daemon} to {Transport} {Target}",
+            uri, request.Transport, useBle ? bleMac : port);
+
+        var session = new RemoteObdSession(uri, request, logger);
+
+        try
+        {
+            await session.ConnectAsync(ct);
+            logger.LogInformation("Connected");
+            return session;
+        }
+        catch (RemoteObdException ex)
+        {
+            // Car asleep / out of range is the routine case, not a crash — say so plainly
+            // and exit non-zero rather than dumping a stack trace.
+            await session.DisposeAsync();
+            Console.Error.WriteLine(ex.AdapterUnavailable
+                ? $"Adapter unavailable: {ex.Message}"
+                : $"Daemon error ({(int)ex.StatusCode}): {ex.Message}");
+            return null;
+        }
+        catch (HttpRequestException ex)
+        {
+            await session.DisposeAsync();
+            Console.Error.WriteLine($"Could not reach daemon at {uri}: {ex.Message}");
+            return null;
+        }
     }
 
     private static (Dictionary<string, List<ResolvedPid>> KnownDids, string? DefsSource) LoadKnownDids(string? defsOptionValue)
@@ -724,26 +810,14 @@ public static class ProgramMain
         }
     }
 
-    private static async Task ScanBle(ILogger logger)
+    private static async Task ScanBle(ILogger logger, int seconds)
     {
-#if MACCATALYST
-        Console.WriteLine("Scanning for BLE devices (10 seconds)...");
+        Console.WriteLine($"Scanning for BLE devices ({seconds} seconds)...");
         Console.WriteLine();
 
-        var devices = await MacBleObdTransport.ScanForDevicesAsync(TimeSpan.FromSeconds(10));
-
-        if (devices.Count == 0)
-        {
-            Console.WriteLine("  (no devices found)");
-        }
-        else
-        {
-            foreach (var (id, name, isObd) in devices)
-            {
-                var marker = isObd ? " <-- possible OBD2 adapter" : "";
-                Console.WriteLine($"  {id}  {name}{marker}");
-            }
-        }
+#if MACCATALYST
+        var devices = await MacBleObdTransport.ScanForDevicesAsync(TimeSpan.FromSeconds(seconds));
+        PrintScanResults(devices.Select(d => (d.Id.ToString(), d.Name, d.IsLikelyObd)));
 
         Console.WriteLine();
         Console.WriteLine("Use --ble <UUID> to connect to a device.");
@@ -755,44 +829,85 @@ public static class ProgramMain
             return;
         }
 
-        Console.WriteLine("Scanning for BLE devices (10 seconds)...");
-        Console.WriteLine();
-
-        var adapters = await BlueZManager.GetAdaptersAsync();
-        if (adapters.Count == 0)
+        try
         {
-            Console.Error.WriteLine("No Bluetooth adapters found.");
+            var devices = await BleObdTransport.ScanForDevicesAsync(TimeSpan.FromSeconds(seconds));
+            PrintScanResults(devices.Select(d => (d.Address, d.Name, d.IsLikelyObd)));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Scan failed: {ex.Message}");
+            Environment.ExitCode = 1;
             return;
         }
-
-        var adapter = adapters[0];
-        var found = new List<(string Address, string Name)>();
-
-        adapter.DeviceFound += async (Adapter sender, DeviceFoundEventArgs eventArgs) =>
-        {
-            var device = eventArgs.Device;
-            var address = await device.GetAddressAsync();
-            var name = "(unknown)";
-            try { name = await device.GetNameAsync(); } catch { }
-
-            if (!found.Any(f => f.Address == address))
-            {
-                found.Add((address, name));
-                var marker = BleConstants.IsLikelyObd(name) ? " <-- possible OBD2 adapter" : "";
-                Console.WriteLine($"  {address}  {name}{marker}");
-            }
-        };
-
-        await adapter.StartDiscoveryAsync();
-        await Task.Delay(10000);
-        await adapter.StopDiscoveryAsync();
-
-        if (found.Count == 0)
-            Console.WriteLine("  (no devices found)");
 
         Console.WriteLine();
         Console.WriteLine("Use --ble <MAC> to connect to a device.");
 #endif
+    }
+
+    /// <summary>
+    /// Scans using the daemon's radio rather than this box's. The whole reason discovery is
+    /// in the daemon API: the car is wherever the Pi is, and only the Pi can hear it.
+    /// </summary>
+    private static async Task ScanBleRemote(string daemon, int seconds, CancellationToken ct)
+    {
+        if (!TryParseDaemonUri(daemon, out var uri)) { Environment.ExitCode = 1; return; }
+
+        Console.WriteLine($"Scanning via daemon {uri} ({seconds} seconds)...");
+        Console.WriteLine();
+
+        ScanResponse result;
+        try
+        {
+            result = await RemoteObdSession.ScanAsync(uri, TimeSpan.FromSeconds(seconds), ct);
+        }
+        catch (RemoteObdException ex)
+        {
+            Console.Error.WriteLine($"Scan failed: {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error: could not reach daemon at {uri} — {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        PrintScanResults(result.Devices.Select(d => (d.Address, d.Name, d.IsLikelyObd)));
+
+        Console.WriteLine();
+        Console.WriteLine($"Use --daemon {uri} --ble <MAC> to connect.");
+    }
+
+    private static void PrintScanResults(IEnumerable<(string Id, string Name, bool IsLikelyObd)> devices)
+    {
+        var list = devices.OrderByDescending(d => d.IsLikelyObd).ThenBy(d => d.Name).ToList();
+        if (list.Count == 0)
+        {
+            Console.WriteLine("  (no devices found)");
+            return;
+        }
+
+        foreach (var (id, name, isObd) in list)
+        {
+            var marker = isObd ? "  <-- possible OBD2 adapter" : "";
+            Console.WriteLine($"  {id}  {name}{marker}");
+        }
+    }
+
+    private static bool TryParseDaemonUri(string daemon, out Uri uri)
+    {
+        if (Uri.TryCreate(daemon, UriKind.Absolute, out var parsed))
+        {
+            uri = parsed;
+            return true;
+        }
+
+        Console.Error.WriteLine($"Error: --daemon must be an absolute URL, got '{daemon}'.");
+        uri = null!;
+        return false;
     }
 
     private static string ResolveDefinitionPath(string? configuredPath)

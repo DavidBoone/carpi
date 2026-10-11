@@ -7,3 +7,7 @@ obj/
 *.orig
 .claude/
 snapshots/
+
+# Private notes and research, kept local
+CLAUDE.md
+*-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].md
