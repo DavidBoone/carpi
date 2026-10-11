@@ -12,6 +12,13 @@
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <PackageReference Include="Linux.Bluetooth" Version="5.67.1" />
+    <!-- Linux.Bluetooth 5.67.1 pins Tmds.DBus 0.20.0, which has CVE-2026-39959 (signal
+         spoofing / fd exhaustion / crash from a hostile bus peer; fixed in 0.92.0). Its own
+         6.0.0-pre3 moved to 0.92.0, so the pairing is upstream-sanctioned — but 6.x is
+         prerelease, so override the transitive pin instead and stay on stable. The library
+         is compiled against 0.20.0, so a break here is a runtime MissingMethodException, not
+         a build error: re-test /scan on pi0 after touching this. -->
+    <PackageReference Include="Tmds.DBus" Version="0.94.2" />
   </ItemGroup>
 
   <ItemGroup Condition="$(TargetFramework.Contains('maccatalyst'))">
